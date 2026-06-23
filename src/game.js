@@ -515,27 +515,59 @@ function drawWorld() {
 
 function drawLaneMarkings(left, top, right, bottom) {
   ctx.lineWidth = 2;
-  for (let x = snapDown(left, BLOCK); x <= right; x += BLOCK) {
-    ctx.setLineDash([]);
-    ctx.strokeStyle = "rgba(242,201,76,.68)";
-    line(x - 3, top, x - 3, bottom);
-    line(x + 3, top, x + 3, bottom);
-    ctx.setLineDash([24, 26]);
-    ctx.strokeStyle = "rgba(247,244,232,.2)";
-    line(x - LANE_WIDTH, top, x - LANE_WIDTH, bottom);
-    line(x + LANE_WIDTH, top, x + LANE_WIDTH, bottom);
+  const firstRoadX = snapDown(left, BLOCK) - BLOCK;
+  const lastRoadX = right + BLOCK;
+  const firstRoadY = snapDown(top, BLOCK) - BLOCK;
+  const lastRoadY = bottom + BLOCK;
+
+  for (let x = firstRoadX; x <= lastRoadX; x += BLOCK) {
+    for (let y = firstRoadY; y <= lastRoadY; y += BLOCK) {
+      const segmentTop = y + ROAD / 2;
+      const segmentBottom = y + BLOCK - ROAD / 2;
+      if (segmentBottom < top || segmentTop > bottom) continue;
+      drawVerticalRoadSegmentMarkings(x, segmentTop, segmentBottom);
+    }
   }
-  for (let y = snapDown(top, BLOCK); y <= bottom; y += BLOCK) {
-    ctx.setLineDash([]);
-    ctx.strokeStyle = "rgba(242,201,76,.68)";
-    line(left, y - 3, right, y - 3);
-    line(left, y + 3, right, y + 3);
-    ctx.setLineDash([24, 26]);
-    ctx.strokeStyle = "rgba(247,244,232,.2)";
-    line(left, y - LANE_WIDTH, right, y - LANE_WIDTH);
-    line(left, y + LANE_WIDTH, right, y + LANE_WIDTH);
+
+  for (let y = firstRoadY; y <= lastRoadY; y += BLOCK) {
+    for (let x = firstRoadX; x <= lastRoadX; x += BLOCK) {
+      const segmentLeft = x + ROAD / 2;
+      const segmentRight = x + BLOCK - ROAD / 2;
+      if (segmentRight < left || segmentLeft > right) continue;
+      drawHorizontalRoadSegmentMarkings(y, segmentLeft, segmentRight);
+    }
   }
   ctx.setLineDash([]);
+}
+
+function drawVerticalRoadSegmentMarkings(x, top, bottom) {
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(242,201,76,.72)";
+  line(x - 3, top, x - 3, bottom);
+  line(x + 3, top, x + 3, bottom);
+  ctx.setLineDash([22, 24]);
+  ctx.strokeStyle = "rgba(247,244,232,.28)";
+  line(x - LANE_WIDTH, top, x - LANE_WIDTH, bottom);
+  line(x + LANE_WIDTH, top, x + LANE_WIDTH, bottom);
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(247,244,232,.38)";
+  line(x - ROAD / 2 + 12, top + 10, x + ROAD / 2 - 12, top + 10);
+  line(x - ROAD / 2 + 12, bottom - 10, x + ROAD / 2 - 12, bottom - 10);
+}
+
+function drawHorizontalRoadSegmentMarkings(y, left, right) {
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(242,201,76,.72)";
+  line(left, y - 3, right, y - 3);
+  line(left, y + 3, right, y + 3);
+  ctx.setLineDash([22, 24]);
+  ctx.strokeStyle = "rgba(247,244,232,.28)";
+  line(left, y - LANE_WIDTH, right, y - LANE_WIDTH);
+  line(left, y + LANE_WIDTH, right, y + LANE_WIDTH);
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(247,244,232,.38)";
+  line(left + 10, y - ROAD / 2 + 12, left + 10, y + ROAD / 2 - 12);
+  line(right - 10, y - ROAD / 2 + 12, right - 10, y + ROAD / 2 - 12);
 }
 
 function drawMarkers() {
