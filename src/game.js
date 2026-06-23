@@ -16,12 +16,15 @@ const ui = {
 };
 
 const BLOCK = 420;
-const ROAD = 118;
+const ROAD = 172;
+const LANE_WIDTH = 30;
+const LANE_OFFSETS = [22, 52];
 const STREAM_RADIUS = 1900;
 const MINIMAP_RANGE = 1500;
 const keys = new Set();
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
+const busColors = ["#f2c94c", "#4cc9f0", "#8fd694", "#f7f4e8"];
 
 const state = {
   running: false,
@@ -219,9 +222,10 @@ function trafficBlocker(car) {
   let closest = null;
   for (const other of vehicles) {
     if (other === car || other === player.inCar || other.dir !== car.dir || other.sign !== car.sign) continue;
-    if (Math.abs(other.lane - car.lane) > 12) continue;
+    if (Math.abs(other.lane - car.lane) > LANE_WIDTH * 0.55) continue;
     const gap = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
-    if (gap > 0 && gap < 110 && (!closest || gap < closest.gap)) closest = { ...other, gap };
+    const followDistance = car.bus || other.bus ? 150 : 110;
+    if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, gap };
   }
   return closest;
 }
@@ -449,10 +453,7 @@ function drawWorld() {
   for (let y = snapDown(top, BLOCK); y <= bottom; y += BLOCK) ctx.fillRect(left, y - ROAD / 2, right - left, ROAD);
   ctx.strokeStyle = "rgba(247,244,232,.16)";
   ctx.lineWidth = 3;
-  ctx.setLineDash([28, 28]);
-  for (let x = snapDown(left, BLOCK); x <= right; x += BLOCK) line(x, top, x, bottom);
-  for (let y = snapDown(top, BLOCK); y <= bottom; y += BLOCK) line(left, y, right, y);
-  ctx.setLineDash([]);
+  drawLaneMarkings(left, top, right, bottom);
 
   for (const b of visibleBuildings(left, top, right, bottom)) {
     ctx.fillStyle = b.color;
@@ -466,6 +467,31 @@ function drawWorld() {
   }
 
   drawDistrictWater(left, top, right, bottom);
+}
+
+function drawLaneMarkings(left, top, right, bottom) {
+  ctx.lineWidth = 2;
+  for (let x = snapDown(left, BLOCK); x <= right; x += BLOCK) {
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(242,201,76,.68)";
+    line(x - 3, top, x - 3, bottom);
+    line(x + 3, top, x + 3, bottom);
+    ctx.setLineDash([24, 26]);
+    ctx.strokeStyle = "rgba(247,244,232,.2)";
+    line(x - LANE_WIDTH, top, x - LANE_WIDTH, bottom);
+    line(x + LANE_WIDTH, top, x + LANE_WIDTH, bottom);
+  }
+  for (let y = snapDown(top, BLOCK); y <= bottom; y += BLOCK) {
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(242,201,76,.68)";
+    line(left, y - 3, right, y - 3);
+    line(left, y + 3, right, y + 3);
+    ctx.setLineDash([24, 26]);
+    ctx.strokeStyle = "rgba(247,244,232,.2)";
+    line(left, y - LANE_WIDTH, right, y - LANE_WIDTH);
+    line(left, y + LANE_WIDTH, right, y + LANE_WIDTH);
+  }
+  ctx.setLineDash([]);
 }
 
 function drawMarkers() {
@@ -512,12 +538,20 @@ function drawCar(car) {
   ctx.fillStyle = car.police ? "#f7f4e8" : car.color;
   roundRect(-car.w / 2, -car.h / 2, car.w, car.h, 6);
   ctx.fill();
-  ctx.fillStyle = car.police ? "#1d3557" : "rgba(10,14,16,.62)";
-  ctx.fillRect(-car.w * 0.17, -car.h * 0.42, car.w * 0.34, car.h * 0.84);
-  ctx.fillStyle = car.police ? "#ef476f" : "rgba(255,255,255,.6)";
-  ctx.fillRect(car.w * 0.3, -car.h * 0.33, 8, 7);
-  ctx.fillStyle = car.police ? "#4cc9f0" : "rgba(255,255,255,.28)";
-  ctx.fillRect(car.w * 0.3, car.h * 0.17, 8, 7);
+  if (car.bus) {
+    ctx.fillStyle = "rgba(10,14,16,.58)";
+    for (let x = -car.w * 0.36; x < car.w * 0.28; x += 18) ctx.fillRect(x, -car.h * 0.34, 10, car.h * 0.68);
+    ctx.fillStyle = "rgba(255,255,255,.65)";
+    ctx.fillRect(car.w * 0.37, -car.h * 0.3, 9, 7);
+    ctx.fillRect(car.w * 0.37, car.h * 0.12, 9, 7);
+  } else {
+    ctx.fillStyle = car.police ? "#1d3557" : "rgba(10,14,16,.62)";
+    ctx.fillRect(-car.w * 0.17, -car.h * 0.42, car.w * 0.34, car.h * 0.84);
+    ctx.fillStyle = car.police ? "#ef476f" : "rgba(255,255,255,.6)";
+    ctx.fillRect(car.w * 0.3, -car.h * 0.33, 8, 7);
+    ctx.fillStyle = car.police ? "#4cc9f0" : "rgba(255,255,255,.28)";
+    ctx.fillRect(car.w * 0.3, car.h * 0.17, 8, 7);
+  }
   ctx.restore();
 }
 
@@ -586,6 +620,8 @@ function updateDebugTelemetry() {
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
   document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
+  document.body.dataset.busCount = String(vehicles.filter((vehicle) => vehicle.bus).length);
+  document.body.dataset.laneCount = String(LANE_OFFSETS.length * 2);
 }
 
 function countVehicleOverlaps() {
@@ -627,18 +663,20 @@ function queueSelfTest() {
 }
 
 function spawnTraffic() {
-  for (let i = 0; i < 46; i++) {
+  for (let i = 0; i < 54; i++) {
+    const bus = i % 8 === 0;
     const car = {
-      w: 54,
-      h: 28,
+      bus,
+      w: bus ? 96 : 54,
+      h: bus ? 32 : 28,
       angle: 0,
       speed: 0,
-      max: randRange(280, 360),
-      accel: randRange(380, 460),
-      aiSpeed: randRange(70, 150),
-      targetSpeed: randRange(78, 150),
+      max: bus ? randRange(190, 240) : randRange(280, 360),
+      accel: bus ? randRange(210, 280) : randRange(380, 460),
+      aiSpeed: bus ? randRange(54, 96) : randRange(70, 150),
+      targetSpeed: bus ? randRange(58, 102) : randRange(78, 150),
       sign: rand() > 0.5 ? 1 : -1,
-      color: colors[Math.floor(rand() * colors.length)],
+      color: bus ? busColors[Math.floor(rand() * busColors.length)] : colors[Math.floor(rand() * colors.length)],
       pathT: randRange(0, 100),
     };
     resetTrafficCar(car, i);
@@ -669,15 +707,20 @@ function resetTrafficCar(car, index = 0) {
   const offset = STREAM_RADIUS * 0.35 + randRange(0, STREAM_RADIUS * 0.65);
   const side = index % 2 === 0 ? 1 : -1;
   const laneBase = horizontal ? player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS) : player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS);
-  const lane = snapDown(laneBase, BLOCK) + randRange(-24, 24);
   car.dir = horizontal ? "h" : "v";
   car.sign = rand() > 0.5 ? 1 : -1;
-  car.lane = lane;
-  car.x = horizontal ? player.x + side * offset : lane;
-  car.y = horizontal ? lane : player.y + side * offset;
+  car.laneIndex = Math.floor(randRange(0, 2));
+  car.lane = trafficLanePosition(snapDown(laneBase, BLOCK), car.sign, car.laneIndex);
+  car.x = horizontal ? player.x + side * offset : car.lane;
+  car.y = horizontal ? car.lane : player.y + side * offset;
   car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
-  car.aiSpeed = randRange(70, 150);
-  car.targetSpeed = randRange(78, 150);
+  car.aiSpeed = car.bus ? randRange(54, 96) : randRange(70, 150);
+  car.targetSpeed = car.bus ? randRange(58, 102) : randRange(78, 150);
+}
+
+function trafficLanePosition(roadCenter, sign, laneIndex) {
+  const offset = LANE_OFFSETS[clamp(laneIndex, 0, LANE_OFFSETS.length - 1)];
+  return roadCenter + offset * sign;
 }
 
 function resetPed(ped) {
