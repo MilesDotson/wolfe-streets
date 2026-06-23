@@ -186,12 +186,16 @@ function updateTraffic(dt) {
   for (const car of vehicles) {
     if (car === player.inCar) continue;
     car.pathT += dt * car.aiSpeed;
-    car.aiSpeed = lerp(car.aiSpeed, car.targetSpeed, 0.6 * dt);
     const blocker = trafficBlocker(car);
+    let desiredSpeed = car.targetSpeed;
     if (blocker) {
-      car.aiSpeed = Math.max(20, Math.min(car.aiSpeed, blocker.aiSpeed || 40) * 0.74);
-      if (blocker.gap < 42) car.sign *= -1;
+      const stopDistance = car.bus || blocker.bus ? 74 : 52;
+      const slowZone = car.bus || blocker.bus ? 170 : 130;
+      desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.18, 0.82);
     }
+    car.aiSpeed = lerp(car.aiSpeed, desiredSpeed, (desiredSpeed < car.aiSpeed ? 4.8 : 0.75) * dt);
+
+    maybeTurnAtIntersection(car);
     const lane = car.lane;
     if (car.dir === "h") {
       car.x += car.sign * car.aiSpeed * dt;
@@ -205,7 +209,7 @@ function updateTraffic(dt) {
     if (dist(car, player) > STREAM_RADIUS) resetTrafficCar(car, vehicles.indexOf(car));
     if (dist(car, player) < (player.inCar ? 44 : 26)) {
       if (player.inCar) {
-        car.sign *= -1;
+        car.aiSpeed *= 0.35;
         player.inCar.speed *= 0.72;
         hurt(7);
         policeNoise(0.45);
@@ -217,6 +221,47 @@ function updateTraffic(dt) {
       }
     }
   }
+}
+
+function maybeTurnAtIntersection(car) {
+  const cross = car.dir === "h" ? car.x : car.y;
+  const roadCenter = Math.round(cross / BLOCK) * BLOCK;
+  if (Math.abs(cross - roadCenter) > Math.max(10, car.aiSpeed * 0.05)) return;
+
+  const otherAxis = car.dir === "h" ? car.y : car.x;
+  const otherRoad = Math.round(otherAxis / BLOCK) * BLOCK;
+  const nodeX = car.dir === "h" ? roadCenter : otherRoad;
+  const nodeY = car.dir === "h" ? otherRoad : roadCenter;
+  const node = `${nodeX},${nodeY}`;
+  if (car.lastNode === node) return;
+  car.lastNode = node;
+
+  const roll = rand();
+  const turn = car.bus ? (roll < 0.82 ? "straight" : roll < 0.91 ? "right" : "left") : roll < 0.58 ? "straight" : roll < 0.8 ? "right" : "left";
+  if (turn === "straight") return;
+
+  const next = turnDirection(car.dir, car.sign, turn);
+  state.trafficTurns = (state.trafficTurns || 0) + 1;
+  car.dir = next.dir;
+  car.sign = next.sign;
+  car.lane = trafficLanePosition(car.dir, car.dir === "h" ? nodeY : nodeX, car.sign, car.laneIndex);
+  if (car.dir === "h") {
+    car.x = nodeX;
+    car.y = car.lane;
+  } else {
+    car.x = car.lane;
+    car.y = nodeY;
+  }
+  car.angle = car.dir === "h" ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+}
+
+function turnDirection(dir, sign, turn) {
+  if (dir === "h") {
+    if (sign > 0) return { dir: "v", sign: turn === "right" ? 1 : -1 };
+    return { dir: "v", sign: turn === "right" ? -1 : 1 };
+  }
+  if (sign > 0) return { dir: "h", sign: turn === "right" ? -1 : 1 };
+  return { dir: "h", sign: turn === "right" ? 1 : -1 };
 }
 
 function trafficBlocker(car) {
@@ -257,13 +302,11 @@ function resolveVehicleOverlaps() {
       b.y += ny * overlap * bPush;
 
       if (!aLocked) {
-        if (typeof a.sign === "number") a.sign *= -1;
         if (a.police) a.unstuckTimer = 0.25;
         a.aiSpeed = Math.max(18, (a.aiSpeed || 80) * 0.58);
         if (a.police) a.speed = Math.max(35, (a.speed || 80) * 0.65);
       }
       if (!bLocked) {
-        if (typeof b.sign === "number") b.sign *= -1;
         if (b.police) b.unstuckTimer = 0.25;
         b.aiSpeed = Math.max(18, (b.aiSpeed || 80) * 0.58);
         if (b.police) b.speed = Math.max(35, (b.speed || 80) * 0.65);
@@ -655,6 +698,8 @@ function updateDebugTelemetry() {
   document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
   document.body.dataset.busCount = String(vehicles.filter((vehicle) => vehicle.bus).length);
   document.body.dataset.laneCount = String(LANE_OFFSETS.length * 2);
+  document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
+  document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8).length);
 }
 
 function countVehicleOverlaps() {
@@ -749,17 +794,18 @@ function resetTrafficCar(car, index = 0) {
   car.dir = horizontal ? "h" : "v";
   car.sign = rand() > 0.5 ? 1 : -1;
   car.laneIndex = Math.floor(randRange(0, 2));
-  car.lane = trafficLanePosition(snapDown(laneBase, BLOCK), car.sign, car.laneIndex);
+  car.lane = trafficLanePosition(car.dir, snapDown(laneBase, BLOCK), car.sign, car.laneIndex);
   car.x = horizontal ? player.x + side * offset : car.lane;
   car.y = horizontal ? car.lane : player.y + side * offset;
   car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
   car.aiSpeed = car.bus ? randRange(54, 96) : randRange(70, 150);
   car.targetSpeed = car.bus ? randRange(58, 102) : randRange(78, 150);
+  car.lastNode = "";
 }
 
-function trafficLanePosition(roadCenter, sign, laneIndex) {
+function trafficLanePosition(dir, roadCenter, sign, laneIndex) {
   const offset = LANE_OFFSETS[clamp(laneIndex, 0, LANE_OFFSETS.length - 1)];
-  return roadCenter + offset * sign;
+  return roadCenter + offset * (dir === "v" ? -sign : sign);
 }
 
 function resetPed(ped) {
