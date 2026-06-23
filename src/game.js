@@ -21,7 +21,7 @@ const LANE_WIDTH = 30;
 const LANE_OFFSETS = [22, 52];
 const STREAM_RADIUS = 1900;
 const MINIMAP_RANGE = 1500;
-const SAFE_SPAWN = { x: 324, y: 324 };
+const HOME = { x: 324, y: 324, name: "Wolfe House" };
 const keys = new Set();
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
@@ -40,8 +40,8 @@ const state = {
 };
 
 const player = {
-  x: SAFE_SPAWN.x,
-  y: SAFE_SPAWN.y,
+  x: HOME.x,
+  y: HOME.y,
   r: 13,
   angle: 0,
   vx: 0,
@@ -117,7 +117,7 @@ function startGame() {
   state.running = true;
   ui.start.classList.add("hidden");
   canvas.focus();
-  toast("Find the yellow marker. Wolfe City is awake.");
+  toast(`Leaving ${HOME.name}. Find the yellow marker.`);
   requestAnimationFrame(tick);
 }
 
@@ -496,6 +496,7 @@ function drawLaneMarkings(left, top, right, bottom) {
 }
 
 function drawMarkers() {
+  drawHomeMarker();
   const points = missionTargets();
   for (const point of points) {
     const pulse = 1 + Math.sin(state.time * 5) * 0.08;
@@ -507,6 +508,30 @@ function drawMarkers() {
     ctx.strokeStyle = point.drop ? "#4cc9f0" : "#f2c94c";
     ctx.stroke();
   }
+}
+
+function drawHomeMarker() {
+  ctx.save();
+  ctx.translate(HOME.x, HOME.y);
+  ctx.fillStyle = "rgba(6,214,160,.18)";
+  ctx.beginPath();
+  ctx.arc(0, 0, 28, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#06d6a0";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.fillStyle = "#06d6a0";
+  ctx.beginPath();
+  ctx.moveTo(-14, -2);
+  ctx.lineTo(0, -16);
+  ctx.lineTo(14, -2);
+  ctx.lineTo(10, -2);
+  ctx.lineTo(10, 13);
+  ctx.lineTo(-10, 13);
+  ctx.lineTo(-10, -2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawPlayer() {
@@ -591,6 +616,10 @@ function drawMiniMap() {
     mctx.arc(center + (point.x - player.x) * s, center + (point.y - player.y) * s, 4, 0, Math.PI * 2);
     mctx.fill();
   }
+  if (dist(HOME, player) <= MINIMAP_RANGE) {
+    mctx.fillStyle = "#06d6a0";
+    mctx.fillRect(center + (HOME.x - player.x) * s - 3, center + (HOME.y - player.y) * s - 3, 6, 6);
+  }
   mctx.fillStyle = "#f7f4e8";
   mctx.beginPath();
   mctx.arc(center, center, 4.5, 0, Math.PI * 2);
@@ -618,6 +647,8 @@ function updateDebugTelemetry() {
   document.body.dataset.playerY = player.y.toFixed(2);
   document.body.dataset.playerBlocked = String(hitsBuilding(player.x, player.y, player.r));
   document.body.dataset.playerOnRoad = String(isRoadish(player.x, player.y));
+  document.body.dataset.playerAtHome = String(dist(player, HOME) < 8);
+  document.body.dataset.homeName = HOME.name;
   document.body.dataset.running = String(state.running);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
@@ -653,6 +684,12 @@ function queueSelfTest() {
   if (heat > 0) {
     state.heat = heat;
     state.wantedTimer = 12;
+  }
+  if (params.get("testHospital") === "1") {
+    window.setTimeout(() => {
+      startGame();
+      sendHomeFromHospital();
+    }, 160);
   }
   const direction = params.get("testMove");
   if (!direction) return;
@@ -865,14 +902,19 @@ function hurt(amount) {
   player.health -= amount;
   player.invuln = 0.5;
   if (player.health <= 0) {
-    player.health = 100;
-    player.x = SAFE_SPAWN.x;
-    player.y = SAFE_SPAWN.y;
-    player.inCar = null;
-    state.heat = 0;
     state.cash = Math.max(0, state.cash - 120);
-    toast("Hospital bill paid. Try to stay in one piece.");
+    sendHomeFromHospital();
   }
+}
+
+function sendHomeFromHospital() {
+  player.health = 100;
+  player.x = HOME.x;
+  player.y = HOME.y;
+  player.inCar = null;
+  state.heat = 0;
+  state.wantedTimer = 0;
+  toast(`Discharged from hospital. Back home at ${HOME.name}.`);
 }
 
 function spark(x, y, count, color) {
