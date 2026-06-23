@@ -253,11 +253,15 @@ function resolveVehicleOverlaps() {
 
       if (!aLocked) {
         if (typeof a.sign === "number") a.sign *= -1;
+        if (a.police) a.unstuckTimer = 0.25;
         a.aiSpeed = Math.max(18, (a.aiSpeed || 80) * 0.58);
+        if (a.police) a.speed = Math.max(35, (a.speed || 80) * 0.65);
       }
       if (!bLocked) {
         if (typeof b.sign === "number") b.sign *= -1;
+        if (b.police) b.unstuckTimer = 0.25;
         b.aiSpeed = Math.max(18, (b.aiSpeed || 80) * 0.58);
+        if (b.police) b.speed = Math.max(35, (b.speed || 80) * 0.65);
       }
       if (aLocked || bLocked) {
         const playerCar = aLocked ? a : b;
@@ -306,16 +310,21 @@ function updatePolice(dt) {
   if (state.wantedTimer <= 0) state.heat = Math.max(0, state.heat - dt * 0.12);
 
   for (const cop of cops) {
+    cop.unstuckTimer = Math.max(0, (cop.unstuckTimer || 0) - dt);
     const pursuit = state.heat >= 1 && dist(cop, player) < 850;
-    const targetAngle = pursuit ? Math.atan2(player.y - cop.y, player.x - cop.x) : cop.angle;
+    const targetAngle = pursuit && !cop.unstuckTimer ? Math.atan2(player.y - cop.y, player.x - cop.x) : cop.angle;
     cop.angle = lerpAngle(cop.angle, targetAngle, pursuit ? 3.2 * dt : 0.8 * dt);
-    cop.speed = lerp(cop.speed, pursuit ? 210 + state.heat * 25 : 90, 1.8 * dt);
+    cop.speed = lerp(cop.speed, pursuit ? 210 + state.heat * 25 : 86, 1.8 * dt);
+    const prevX = cop.x;
+    const prevY = cop.y;
     cop.x += Math.cos(cop.angle) * cop.speed * dt;
     cop.y += Math.sin(cop.angle) * cop.speed * dt;
     if (hitsBuilding(cop.x, cop.y, 22)) {
-      cop.angle += Math.PI * 0.72;
-      cop.x -= Math.cos(cop.angle) * 52;
-      cop.y -= Math.sin(cop.angle) * 52;
+      cop.x = prevX;
+      cop.y = prevY;
+      cop.angle = escapeHeading(cop);
+      cop.speed = 48;
+      cop.unstuckTimer = 0.65;
     }
     if (dist(cop, player) > STREAM_RADIUS * 1.2) resetCop(cop);
     if (pursuit && dist(cop, player) < (player.inCar ? 42 : 28)) {
@@ -576,6 +585,7 @@ function updateDebugTelemetry() {
   document.body.dataset.running = String(state.running);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
+  document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
 }
 
 function countVehicleOverlaps() {
@@ -589,8 +599,23 @@ function countVehicleOverlaps() {
   return overlaps;
 }
 
+function maxPoliceSpin() {
+  let maxSpin = 0;
+  for (const cop of cops) {
+    const spin = Math.abs(Math.atan2(Math.sin(cop.angle - (cop.lastTelemetryAngle ?? cop.angle)), Math.cos(cop.angle - (cop.lastTelemetryAngle ?? cop.angle))));
+    maxSpin = Math.max(maxSpin, spin);
+    cop.lastTelemetryAngle = cop.angle;
+  }
+  return maxSpin;
+}
+
 function queueSelfTest() {
   const params = new URLSearchParams(window.location.search);
+  const heat = Number(params.get("testHeat") || 0);
+  if (heat > 0) {
+    state.heat = heat;
+    state.wantedTimer = 12;
+  }
   const direction = params.get("testMove");
   if (!direction) return;
   const duration = clamp(Number(params.get("testMs") || 700), 100, 8000);
@@ -636,7 +661,7 @@ function spawnCops() {
     { x: 3340, y: 1260 },
     { x: 1220, y: 3340 },
   ];
-  for (const p of starts) cops.push({ ...p, w: 58, h: 30, angle: randRange(0, 6), speed: 80, police: true });
+  for (const p of starts) cops.push({ ...p, w: 58, h: 30, angle: randRange(0, 6), speed: 80, police: true, unstuckTimer: 0 });
 }
 
 function resetTrafficCar(car, index = 0) {
@@ -674,10 +699,28 @@ function resetCop(cop) {
   cop.x = player.x + Math.cos(angle) * radius;
   cop.y = player.y + Math.sin(angle) * radius;
   cop.angle = angle + Math.PI;
+  cop.speed = 80;
+  cop.unstuckTimer = 0.3;
   if (hitsBuilding(cop.x, cop.y, 26)) {
     cop.x = snapDown(cop.x, BLOCK);
     cop.y = snapDown(cop.y, BLOCK);
   }
+}
+
+function escapeHeading(vehicle) {
+  const headings = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+  let best = vehicle.angle + Math.PI;
+  let bestScore = -Infinity;
+  for (const heading of headings) {
+    const testX = vehicle.x + Math.cos(heading) * 92;
+    const testY = vehicle.y + Math.sin(heading) * 92;
+    const score = (hitsBuilding(testX, testY, 24) ? -1000 : 0) + (isRoadish(testX, testY) ? 100 : 0) + dist({ x: testX, y: testY }, player) * 0.01;
+    if (score > bestScore) {
+      best = heading;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function missionTargets() {
