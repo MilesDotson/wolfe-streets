@@ -15,9 +15,10 @@ const ui = {
   toast: document.querySelector("#toast"),
 };
 
-const WORLD = 4200;
 const BLOCK = 420;
 const ROAD = 118;
+const STREAM_RADIUS = 1900;
+const MINIMAP_RANGE = 1500;
 const keys = new Set();
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
@@ -81,13 +82,11 @@ const missions = [
 ];
 
 let activeJob = makeJob(0);
-const buildings = [];
 const vehicles = [];
 const peds = [];
 const cops = [];
 const particles = [];
 
-buildCity();
 spawnTraffic();
 spawnPeds();
 spawnCops();
@@ -154,8 +153,6 @@ function updatePlayer(dt) {
     car.angle += steer * (1.7 + Math.abs(car.speed) / 210) * Math.sign(car.speed || 1) * dt;
     car.x += Math.cos(car.angle) * car.speed * dt;
     car.y += Math.sin(car.angle) * car.speed * dt;
-    car.x = clamp(car.x, 40, WORLD - 40);
-    car.y = clamp(car.y, 40, WORLD - 40);
     if (hitsBuilding(car.x, car.y, car.w * 0.42)) {
       car.x -= Math.cos(car.angle) * car.speed * dt * 1.4;
       car.y -= Math.sin(car.angle) * car.speed * dt * 1.4;
@@ -176,8 +173,8 @@ function updatePlayer(dt) {
   const speed = key("shift") ? 230 : 148;
   const nx = player.x + (dx / mag) * speed * dt;
   const ny = player.y + (dy / mag) * speed * dt;
-  if (!hitsBuilding(nx, player.y, player.r)) player.x = clamp(nx, 20, WORLD - 20);
-  if (!hitsBuilding(player.x, ny, player.r)) player.y = clamp(ny, 20, WORLD - 20);
+  if (!hitsBuilding(nx, player.y, player.r)) player.x = nx;
+  if (!hitsBuilding(player.x, ny, player.r)) player.y = ny;
   if (dx || dy) player.angle = Math.atan2(dy, dx);
 }
 
@@ -196,13 +193,12 @@ function updateTraffic(dt) {
       car.x += car.sign * car.aiSpeed * dt;
       car.y = lane;
       car.angle = car.sign > 0 ? 0 : Math.PI;
-      if (car.x < 80 || car.x > WORLD - 80) car.sign *= -1;
     } else {
       car.y += car.sign * car.aiSpeed * dt;
       car.x = lane;
       car.angle = car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
-      if (car.y < 80 || car.y > WORLD - 80) car.sign *= -1;
     }
+    if (dist(car, player) > STREAM_RADIUS) resetTrafficCar(car, vehicles.indexOf(car));
     if (dist(car, player) < (player.inCar ? 44 : 26)) {
       if (player.inCar) {
         car.sign *= -1;
@@ -250,10 +246,10 @@ function resolveVehicleOverlaps() {
       const aPush = bLocked ? 1 : aLocked ? 0 : 0.5;
       const bPush = aLocked ? 1 : bLocked ? 0 : 0.5;
 
-      a.x = clamp(a.x - nx * overlap * aPush, 40, WORLD - 40);
-      a.y = clamp(a.y - ny * overlap * aPush, 40, WORLD - 40);
-      b.x = clamp(b.x + nx * overlap * bPush, 40, WORLD - 40);
-      b.y = clamp(b.y + ny * overlap * bPush, 40, WORLD - 40);
+      a.x -= nx * overlap * aPush;
+      a.y -= ny * overlap * aPush;
+      b.x += nx * overlap * bPush;
+      b.y += ny * overlap * bPush;
 
       if (!aLocked) {
         if (typeof a.sign === "number") a.sign *= -1;
@@ -288,11 +284,12 @@ function updatePeds(dt) {
     const nx = ped.x + Math.cos(ped.angle) * speed * dt;
     const ny = ped.y + Math.sin(ped.angle) * speed * dt;
     if (!hitsBuilding(nx, ny, 9) && isRoadish(nx, ny)) {
-      ped.x = clamp(nx, 30, WORLD - 30);
-      ped.y = clamp(ny, 30, WORLD - 30);
+      ped.x = nx;
+      ped.y = ny;
     } else {
       ped.angle += Math.PI * 0.6;
     }
+    if (dist(ped, player) > STREAM_RADIUS * 0.82) resetPed(ped);
     ped.scared = dist(ped, player) < (player.inCar ? 120 : 58);
     if (ped.scared && player.inCar && dist(ped, player) < 24) {
       hurt(3);
@@ -315,11 +312,12 @@ function updatePolice(dt) {
     cop.speed = lerp(cop.speed, pursuit ? 210 + state.heat * 25 : 90, 1.8 * dt);
     cop.x += Math.cos(cop.angle) * cop.speed * dt;
     cop.y += Math.sin(cop.angle) * cop.speed * dt;
-    if (hitsBuilding(cop.x, cop.y, 22) || cop.x < 40 || cop.x > WORLD - 40 || cop.y < 40 || cop.y > WORLD - 40) {
+    if (hitsBuilding(cop.x, cop.y, 22)) {
       cop.angle += Math.PI * 0.72;
-      cop.x = clamp(cop.x, 60, WORLD - 60);
-      cop.y = clamp(cop.y, 60, WORLD - 60);
+      cop.x -= Math.cos(cop.angle) * 52;
+      cop.y -= Math.sin(cop.angle) * 52;
     }
+    if (dist(cop, player) > STREAM_RADIUS * 1.2) resetCop(cop);
     if (pursuit && dist(cop, player) < (player.inCar ? 42 : 28)) {
       hurt(player.inCar ? 10 : 18);
       state.heat = Math.max(state.heat, 2.2);
@@ -409,8 +407,8 @@ function cycleMission() {
 function updateCamera(dt) {
   const targetX = player.x - canvas.width / 2;
   const targetY = player.y - canvas.height / 2;
-  state.camera.x = lerp(state.camera.x, clamp(targetX, 0, WORLD - canvas.width), 7 * dt);
-  state.camera.y = lerp(state.camera.y, clamp(targetY, 0, WORLD - canvas.height), 7 * dt);
+  state.camera.x = lerp(state.camera.x, targetX, 7 * dt);
+  state.camera.y = lerp(state.camera.y, targetY, 7 * dt);
 }
 
 function draw() {
@@ -430,19 +428,24 @@ function draw() {
 }
 
 function drawWorld() {
+  const left = state.camera.x - 120;
+  const top = state.camera.y - 120;
+  const right = state.camera.x + canvas.width + 120;
+  const bottom = state.camera.y + canvas.height + 120;
+
   ctx.fillStyle = "#25352f";
-  ctx.fillRect(0, 0, WORLD, WORLD);
+  ctx.fillRect(left, top, right - left, bottom - top);
   ctx.fillStyle = "#1b2424";
-  for (let x = 0; x <= WORLD; x += BLOCK) ctx.fillRect(x - ROAD / 2, 0, ROAD, WORLD);
-  for (let y = 0; y <= WORLD; y += BLOCK) ctx.fillRect(0, y - ROAD / 2, WORLD, ROAD);
+  for (let x = snapDown(left, BLOCK); x <= right; x += BLOCK) ctx.fillRect(x - ROAD / 2, top, ROAD, bottom - top);
+  for (let y = snapDown(top, BLOCK); y <= bottom; y += BLOCK) ctx.fillRect(left, y - ROAD / 2, right - left, ROAD);
   ctx.strokeStyle = "rgba(247,244,232,.16)";
   ctx.lineWidth = 3;
   ctx.setLineDash([28, 28]);
-  for (let x = 0; x <= WORLD; x += BLOCK) line(x, 0, x, WORLD);
-  for (let y = 0; y <= WORLD; y += BLOCK) line(0, y, WORLD, y);
+  for (let x = snapDown(left, BLOCK); x <= right; x += BLOCK) line(x, top, x, bottom);
+  for (let y = snapDown(top, BLOCK); y <= bottom; y += BLOCK) line(left, y, right, y);
   ctx.setLineDash([]);
 
-  for (const b of buildings) {
+  for (const b of visibleBuildings(left, top, right, bottom)) {
     ctx.fillStyle = b.color;
     ctx.fillRect(b.x, b.y, b.w, b.h);
     ctx.fillStyle = "rgba(255,255,255,.08)";
@@ -453,10 +456,7 @@ function drawWorld() {
     ctx.strokeRect(b.x, b.y, b.w, b.h);
   }
 
-  ctx.fillStyle = "#174d54";
-  ctx.fillRect(3650, 0, 550, WORLD);
-  ctx.fillStyle = "rgba(255,255,255,.12)";
-  for (let y = 40; y < WORLD; y += 90) ctx.fillRect(3640, y, 70, 20);
+  drawDistrictWater(left, top, right, bottom);
 }
 
 function drawMarkers() {
@@ -528,26 +528,32 @@ function drawVignette() {
 }
 
 function drawMiniMap() {
-  const s = mini.width / WORLD;
+  const s = mini.width / (MINIMAP_RANGE * 2);
+  const center = mini.width / 2;
   mctx.clearRect(0, 0, mini.width, mini.height);
   mctx.fillStyle = "#182121";
   mctx.fillRect(0, 0, mini.width, mini.height);
   mctx.fillStyle = "#2e3b39";
-  for (let x = 0; x <= WORLD; x += BLOCK) mctx.fillRect(x * s - 2, 0, 4, mini.height);
-  for (let y = 0; y <= WORLD; y += BLOCK) mctx.fillRect(0, y * s - 2, mini.width, 4);
+  for (let x = snapDown(player.x - MINIMAP_RANGE, BLOCK); x <= player.x + MINIMAP_RANGE; x += BLOCK) {
+    mctx.fillRect(center + (x - player.x) * s - 2, 0, 4, mini.height);
+  }
+  for (let y = snapDown(player.y - MINIMAP_RANGE, BLOCK); y <= player.y + MINIMAP_RANGE; y += BLOCK) {
+    mctx.fillRect(0, center + (y - player.y) * s - 2, mini.width, 4);
+  }
   for (const point of missionTargets()) {
+    if (dist(point, player) > MINIMAP_RANGE) continue;
     mctx.fillStyle = point.drop ? "#4cc9f0" : "#f2c94c";
     mctx.beginPath();
-    mctx.arc(point.x * s, point.y * s, 4, 0, Math.PI * 2);
+    mctx.arc(center + (point.x - player.x) * s, center + (point.y - player.y) * s, 4, 0, Math.PI * 2);
     mctx.fill();
   }
   mctx.fillStyle = "#f7f4e8";
   mctx.beginPath();
-  mctx.arc(player.x * s, player.y * s, 4.5, 0, Math.PI * 2);
+  mctx.arc(center, center, 4.5, 0, Math.PI * 2);
   mctx.fill();
   if (state.heat >= 1) {
     mctx.fillStyle = "#ef476f";
-    for (const cop of cops) mctx.fillRect(cop.x * s - 2, cop.y * s - 2, 4, 4);
+    for (const cop of cops) mctx.fillRect(center + (cop.x - player.x) * s - 2, center + (cop.y - player.y) * s - 2, 4, 4);
   }
 }
 
@@ -569,6 +575,7 @@ function updateDebugTelemetry() {
   document.body.dataset.playerBlocked = String(hitsBuilding(player.x, player.y, player.r));
   document.body.dataset.running = String(state.running);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
+  document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
 }
 
 function countVehicleOverlaps() {
@@ -586,40 +593,17 @@ function queueSelfTest() {
   const params = new URLSearchParams(window.location.search);
   const direction = params.get("testMove");
   if (!direction) return;
+  const duration = clamp(Number(params.get("testMs") || 700), 100, 8000);
   window.setTimeout(() => {
     startGame();
     keys.add(direction.toLowerCase());
-    window.setTimeout(() => keys.delete(direction.toLowerCase()), 700);
+    window.setTimeout(() => keys.delete(direction.toLowerCase()), duration);
   }, 120);
-}
-
-function buildCity() {
-  for (let gx = 0; gx < WORLD; gx += BLOCK) {
-    for (let gy = 0; gy < WORLD; gy += BLOCK) {
-      const x = gx + ROAD / 2 + 24;
-      const y = gy + ROAD / 2 + 24;
-      const w = BLOCK - ROAD - 48;
-      const h = BLOCK - ROAD - 48;
-      if (w > 70 && h > 70 && rand() > 0.08 && x + w < 3620) {
-        buildings.push({
-          x,
-          y,
-          w,
-          h,
-          color: rand() > 0.68 ? "#39443f" : rand() > 0.5 ? "#344052" : "#473f38",
-        });
-      }
-    }
-  }
 }
 
 function spawnTraffic() {
   for (let i = 0; i < 46; i++) {
-    const horizontal = rand() > 0.5;
-    const lane = Math.floor(randRange(1, WORLD / BLOCK - 1)) * BLOCK + randRange(-24, 24);
-    vehicles.push({
-      x: horizontal ? randRange(100, WORLD - 700) : lane,
-      y: horizontal ? lane : randRange(100, WORLD - 100),
+    const car = {
       w: 54,
       h: 28,
       angle: 0,
@@ -629,23 +613,19 @@ function spawnTraffic() {
       aiSpeed: randRange(70, 150),
       targetSpeed: randRange(78, 150),
       sign: rand() > 0.5 ? 1 : -1,
-      dir: horizontal ? "h" : "v",
-      lane,
       color: colors[Math.floor(rand() * colors.length)],
       pathT: randRange(0, 100),
-    });
+    };
+    resetTrafficCar(car, i);
+    vehicles.push(car);
   }
 }
 
 function spawnPeds() {
   for (let i = 0; i < 86; i++) {
-    let x = 0;
-    let y = 0;
-    do {
-      x = randRange(120, 3500);
-      y = randRange(120, WORLD - 120);
-    } while (!isRoadish(x, y) || hitsBuilding(x, y, 10));
-    peds.push({ x, y, angle: randRange(0, Math.PI * 2), wait: randRange(0, 2), color: colors[Math.floor(rand() * colors.length)] });
+    const ped = { x: 0, y: 0, angle: randRange(0, Math.PI * 2), wait: randRange(0, 2), color: colors[Math.floor(rand() * colors.length)] };
+    resetPed(ped);
+    peds.push(ped);
   }
 }
 
@@ -657,6 +637,47 @@ function spawnCops() {
     { x: 1220, y: 3340 },
   ];
   for (const p of starts) cops.push({ ...p, w: 58, h: 30, angle: randRange(0, 6), speed: 80, police: true });
+}
+
+function resetTrafficCar(car, index = 0) {
+  const horizontal = rand() > 0.5;
+  const offset = STREAM_RADIUS * 0.35 + randRange(0, STREAM_RADIUS * 0.65);
+  const side = index % 2 === 0 ? 1 : -1;
+  const laneBase = horizontal ? player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS) : player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS);
+  const lane = snapDown(laneBase, BLOCK) + randRange(-24, 24);
+  car.dir = horizontal ? "h" : "v";
+  car.sign = rand() > 0.5 ? 1 : -1;
+  car.lane = lane;
+  car.x = horizontal ? player.x + side * offset : lane;
+  car.y = horizontal ? lane : player.y + side * offset;
+  car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  car.aiSpeed = randRange(70, 150);
+  car.targetSpeed = randRange(78, 150);
+}
+
+function resetPed(ped) {
+  let tries = 0;
+  do {
+    const angle = randRange(0, Math.PI * 2);
+    const radius = randRange(STREAM_RADIUS * 0.3, STREAM_RADIUS * 0.78);
+    ped.x = player.x + Math.cos(angle) * radius;
+    ped.y = player.y + Math.sin(angle) * radius;
+    tries += 1;
+  } while (tries < 30 && (!isRoadish(ped.x, ped.y) || hitsBuilding(ped.x, ped.y, 10)));
+  ped.angle = randRange(0, Math.PI * 2);
+  ped.wait = randRange(0.2, 2);
+}
+
+function resetCop(cop) {
+  const angle = randRange(0, Math.PI * 2);
+  const radius = STREAM_RADIUS * 0.75;
+  cop.x = player.x + Math.cos(angle) * radius;
+  cop.y = player.y + Math.sin(angle) * radius;
+  cop.angle = angle + Math.PI;
+  if (hitsBuilding(cop.x, cop.y, 26)) {
+    cop.x = snapDown(cop.x, BLOCK);
+    cop.y = snapDown(cop.y, BLOCK);
+  }
 }
 
 function missionTargets() {
@@ -682,13 +703,67 @@ function makeJob(index) {
 }
 
 function hitsBuilding(x, y, r) {
-  return buildings.some((b) => x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h);
+  const minCx = Math.floor((x - r) / BLOCK) - 1;
+  const maxCx = Math.floor((x + r) / BLOCK) + 1;
+  const minCy = Math.floor((y - r) / BLOCK) - 1;
+  const maxCy = Math.floor((y + r) / BLOCK) + 1;
+  for (let cx = minCx; cx <= maxCx; cx++) {
+    for (let cy = minCy; cy <= maxCy; cy++) {
+      const b = buildingForCell(cx, cy);
+      if (b && x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h) return true;
+    }
+  }
+  return false;
+}
+
+function visibleBuildings(left, top, right, bottom) {
+  const result = [];
+  const minCx = Math.floor(left / BLOCK) - 1;
+  const maxCx = Math.floor(right / BLOCK) + 1;
+  const minCy = Math.floor(top / BLOCK) - 1;
+  const maxCy = Math.floor(bottom / BLOCK) + 1;
+  for (let cx = minCx; cx <= maxCx; cx++) {
+    for (let cy = minCy; cy <= maxCy; cy++) {
+      const building = buildingForCell(cx, cy);
+      if (building) result.push(building);
+    }
+  }
+  return result;
+}
+
+function buildingForCell(cx, cy) {
+  const r = cellRandom(cx, cy);
+  if (r() < 0.08 || isWaterDistrict(cx * BLOCK + BLOCK / 2)) return null;
+  const inset = 24 + Math.floor(r() * 16);
+  const x = cx * BLOCK + ROAD / 2 + inset;
+  const y = cy * BLOCK + ROAD / 2 + inset;
+  const w = BLOCK - ROAD - inset * 2;
+  const h = BLOCK - ROAD - inset * 2;
+  const palette = ["#39443f", "#344052", "#473f38", "#2f4a4d", "#4a3c51"];
+  return { x, y, w, h, color: palette[Math.floor(r() * palette.length)] };
+}
+
+function drawDistrictWater(left, top, right, bottom) {
+  const start = snapDown(left, BLOCK * 12);
+  ctx.fillStyle = "#174d54";
+  for (let x = start; x <= right; x += BLOCK * 12) {
+    const waterX = x + BLOCK * 8.7;
+    if (waterX + 550 < left || waterX > right) continue;
+    ctx.fillRect(waterX, top, 550, bottom - top);
+    ctx.fillStyle = "rgba(255,255,255,.12)";
+    for (let y = snapDown(top, 90); y < bottom; y += 90) ctx.fillRect(waterX - 10, y, 70, 20);
+    ctx.fillStyle = "#174d54";
+  }
 }
 
 function isRoadish(x, y) {
-  const mx = Math.abs((x % BLOCK) - BLOCK / 2);
-  const my = Math.abs((y % BLOCK) - BLOCK / 2);
-  return mx > BLOCK / 2 - ROAD * 0.88 || my > BLOCK / 2 - ROAD * 0.88 || x > 3600;
+  const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
+  const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
+  return mx < ROAD * 0.55 || my < ROAD * 0.55 || isWaterDistrict(x);
+}
+
+function isWaterDistrict(x) {
+  return mod(x - BLOCK * 8.7, BLOCK * 12) < 550;
 }
 
 function policeNoise(amount) {
@@ -777,6 +852,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function mod(value, size) {
+  return ((value % size) + size) % size;
+}
+
+function snapDown(value, size) {
+  return Math.floor(value / size) * size;
+}
+
 function lerp(a, b, t) {
   return a + (b - a) * clamp(t, 0, 1);
 }
@@ -788,6 +871,18 @@ function lerpAngle(a, b, t) {
 
 function randRange(min, max) {
   return min + rand() * (max - min);
+}
+
+function cellRandom(cx, cy) {
+  return mulberry32(hashCell(cx, cy));
+}
+
+function hashCell(cx, cy) {
+  let h = 2166136261;
+  h ^= cx + 0x9e3779b9 + (h << 6) + (h >>> 2);
+  h = Math.imul(h, 16777619);
+  h ^= cy + 0x85ebca6b + (h << 6) + (h >>> 2);
+  return h >>> 0;
 }
 
 function mulberry32(seed) {
