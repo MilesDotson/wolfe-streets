@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wolfe Streets</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <main id="shell">
+      <canvas id="game" width="1280" height="720" tabindex="0" aria-label="Wolfe Streets game canvas"></canvas>
+
+      <section id="hud" aria-live="polite">
+        <div class="brand">
+          <span class="mark">W</span>
+          <div>
+            <strong>Wolfe Streets</strong>
+            <small id="mode">On foot</small>
+          </div>
+        </div>
+        <div class="stat"><span>Cash</span><strong id="cash">$0</strong></div>
+        <div class="stat"><span>Heat</span><strong id="heat">0</strong></div>
+        <div class="stat"><span>Rep</span><strong id="rep">0</strong></div>
+        <div class="bar"><span id="healthBar"></span></div>
+        <canvas id="map" width="160" height="160" aria-label="Mini map"></canvas>
+      </section>
+
+      <section id="mission">
+        <strong id="missionTitle">Welcome to Wolfe City</strong>
+        <p id="missionText">Reach the glowing marker to start your first job.</p>
+      </section>
+
+      <section id="controls">
+        <kbd>WASD</kbd><span>Move / drive</span>
+        <kbd>Shift</kbd><span>Sprint / boost</span>
+        <kbd>E</kbd><span>Enter vehicle / interact</span>
+        <kbd>Space</kbd><span>Handbrake</span>
+        <kbd>M</kbd><span>Next job</span>
+      </section>
+
+      <button id="start" type="button">Start Game</button>
+      <div id="toast"></div>
+    </main>
+
+    <script type="module" src="src/game.js?v=movement-fix-1"></script>
+  </body>
+</html>

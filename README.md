@@ -1,30 +1,33 @@
-# Recreate GTA game
+# Wolfe Streets
 
-*Automatically synced with your [v0.dev](https://v0.dev) deployments*
+A local top-down open-city driving game inspired by classic crime sandbox games.
 
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/milesdotsons-projects/v0-recreate-gta-game)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.dev-black?style=for-the-badge)](https://v0.dev/chat/projects/17ZxPvSzpem)
+## Play locally
 
-## Overview
+```bash
+npm start
+```
 
-This repository will stay in sync with your deployed chats on [v0.dev](https://v0.dev).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.dev](https://v0.dev).
+Then open:
 
-## Deployment
+```text
+http://localhost:5173
+```
 
-Your project is live at:
+No package install is required. The game is plain HTML, CSS, and JavaScript.
 
-**[https://vercel.com/milesdotsons-projects/v0-recreate-gta-game](https://vercel.com/milesdotsons-projects/v0-recreate-gta-game)**
+## Controls
 
-## Build your app
+- `WASD` or arrow keys: move / drive
+- `Shift`: sprint / boost
+- `E`: enter or exit a nearby vehicle
+- `Space`: handbrake
+- `M`: cycle to the next job
 
-Continue building your app on:
+## Features
 
-**[https://v0.dev/chat/projects/17ZxPvSzpem](https://v0.dev/chat/projects/17ZxPvSzpem)**
-
-## How It Works
-
-1. Create and modify your project using [v0.dev](https://v0.dev)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+- Large generated city with roads, buildings, river docks, and minimap
+- On-foot and vehicle movement
+- Traffic, pedestrians, collisions, and police pursuit
+- Three rotating missions with timers, pickups, rewards, and heat
+- Persistent cash and reputation through `localStorage`
