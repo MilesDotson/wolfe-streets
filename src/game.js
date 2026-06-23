@@ -21,6 +21,7 @@ const LANE_WIDTH = 30;
 const LANE_OFFSETS = [22, 52];
 const STREAM_RADIUS = 1900;
 const MINIMAP_RANGE = 1500;
+const SAFE_SPAWN = { x: 324, y: 324 };
 const keys = new Set();
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
@@ -39,8 +40,8 @@ const state = {
 };
 
 const player = {
-  x: 420,
-  y: 420,
+  x: SAFE_SPAWN.x,
+  y: SAFE_SPAWN.y,
   r: 13,
   angle: 0,
   vx: 0,
@@ -616,6 +617,7 @@ function updateDebugTelemetry() {
   document.body.dataset.playerX = player.x.toFixed(2);
   document.body.dataset.playerY = player.y.toFixed(2);
   document.body.dataset.playerBlocked = String(hitsBuilding(player.x, player.y, player.r));
+  document.body.dataset.playerOnRoad = String(isRoadish(player.x, player.y));
   document.body.dataset.running = String(state.running);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
@@ -864,8 +866,8 @@ function hurt(amount) {
   player.invuln = 0.5;
   if (player.health <= 0) {
     player.health = 100;
-    player.x = 420;
-    player.y = 420;
+    player.x = SAFE_SPAWN.x;
+    player.y = SAFE_SPAWN.y;
     player.inCar = null;
     state.heat = 0;
     state.cash = Math.max(0, state.cash - 120);
