@@ -186,9 +186,11 @@ function updateTraffic(dt) {
   for (const car of vehicles) {
     if (car === player.inCar) continue;
     car.pathT += dt * car.aiSpeed;
+    car.mergeCooldown = Math.max(0, (car.mergeCooldown || 0) - dt);
     const blocker = trafficBlocker(car);
     let desiredSpeed = car.targetSpeed;
     if (blocker) {
+      if (shouldPass(car, blocker)) startLaneChange(car);
       const stopDistance = blocker.minGap + (car.bus || blocker.bus ? 18 : 10);
       const slowZone = blocker.minGap + (car.bus || blocker.bus ? 74 : 46);
       desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.32, 0.96);
@@ -196,6 +198,7 @@ function updateTraffic(dt) {
     car.aiSpeed = lerp(car.aiSpeed, desiredSpeed, (desiredSpeed < car.aiSpeed ? 4.8 : 0.75) * dt);
 
     maybeTurnAtIntersection(car);
+    car.lane = lerp(car.lane, car.targetLane ?? car.lane, 4.5 * dt);
     const lane = car.lane;
     if (car.dir === "h") {
       car.x += car.sign * car.aiSpeed * dt;
@@ -223,6 +226,35 @@ function updateTraffic(dt) {
   }
 }
 
+function shouldPass(car, blocker) {
+  if (car.bus || car.mergeCooldown > 0 || blocker.gap < blocker.minGap + 10) return false;
+  if ((car.targetLane ?? car.lane) !== car.lane) return false;
+  if (car.targetSpeed < (blocker.aiSpeed || 0) + 18) return false;
+  const nextLaneIndex = car.laneIndex === 0 ? 1 : 0;
+  return isLaneClear(car, nextLaneIndex);
+}
+
+function startLaneChange(car) {
+  car.laneIndex = car.laneIndex === 0 ? 1 : 0;
+  const roadCenter = Math.round(car.lane / BLOCK) * BLOCK;
+  car.targetLane = trafficLanePosition(car.dir, roadCenter, car.sign, car.laneIndex);
+  car.mergeCooldown = 2.2;
+  state.trafficPasses = (state.trafficPasses || 0) + 1;
+}
+
+function isLaneClear(car, laneIndex) {
+  const roadCenter = Math.round(car.lane / BLOCK) * BLOCK;
+  const lane = trafficLanePosition(car.dir, roadCenter, car.sign, laneIndex);
+  for (const other of vehicles) {
+    if (other === car || other.dir !== car.dir || other.sign !== car.sign) continue;
+    if (Math.abs((other.targetLane ?? other.lane) - lane) > LANE_WIDTH * 0.55) continue;
+    const delta = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
+    const minGap = (car.w + other.w) / 2;
+    if (delta > -minGap - 34 && delta < minGap + 96) return false;
+  }
+  return true;
+}
+
 function maybeTurnAtIntersection(car) {
   const cross = car.dir === "h" ? car.x : car.y;
   const roadCenter = Math.round(cross / BLOCK) * BLOCK;
@@ -245,6 +277,8 @@ function maybeTurnAtIntersection(car) {
   car.dir = next.dir;
   car.sign = next.sign;
   car.lane = trafficLanePosition(car.dir, car.dir === "h" ? nodeY : nodeX, car.sign, car.laneIndex);
+  car.targetLane = car.lane;
+  car.mergeCooldown = 1.2;
   if (car.dir === "h") {
     car.x = nodeX;
     car.y = car.lane;
@@ -734,6 +768,7 @@ function updateDebugTelemetry() {
   document.body.dataset.busCount = String(vehicles.filter((vehicle) => vehicle.bus).length);
   document.body.dataset.laneCount = String(LANE_OFFSETS.length * 2);
   document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
+  document.body.dataset.trafficPasses = String(state.trafficPasses || 0);
   document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8).length);
   document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
 }
@@ -813,6 +848,7 @@ function spawnTraffic() {
       sign: rand() > 0.5 ? 1 : -1,
       color: bus ? busColors[Math.floor(rand() * busColors.length)] : colors[Math.floor(rand() * colors.length)],
       pathT: randRange(0, 100),
+      mergeCooldown: randRange(0, 1.5),
     };
     resetTrafficCar(car, i);
     vehicles.push(car);
@@ -846,12 +882,14 @@ function resetTrafficCar(car, index = 0) {
   car.sign = rand() > 0.5 ? 1 : -1;
   car.laneIndex = Math.floor(randRange(0, 2));
   car.lane = trafficLanePosition(car.dir, snapDown(laneBase, BLOCK), car.sign, car.laneIndex);
+  car.targetLane = car.lane;
   car.x = horizontal ? player.x + side * offset : car.lane;
   car.y = horizontal ? car.lane : player.y + side * offset;
   car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
   car.aiSpeed = car.bus ? randRange(54, 96) : randRange(70, 150);
   car.targetSpeed = car.bus ? randRange(58, 102) : randRange(78, 150);
   car.lastNode = "";
+  car.mergeCooldown = randRange(0.4, 1.6);
 }
 
 function trafficLanePosition(dir, roadCenter, sign, laneIndex) {
