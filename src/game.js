@@ -189,9 +189,9 @@ function updateTraffic(dt) {
     const blocker = trafficBlocker(car);
     let desiredSpeed = car.targetSpeed;
     if (blocker) {
-      const stopDistance = car.bus || blocker.bus ? 74 : 52;
-      const slowZone = car.bus || blocker.bus ? 170 : 130;
-      desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.18, 0.82);
+      const stopDistance = blocker.minGap + (car.bus || blocker.bus ? 18 : 10);
+      const slowZone = blocker.minGap + (car.bus || blocker.bus ? 74 : 46);
+      desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.32, 0.96);
     }
     car.aiSpeed = lerp(car.aiSpeed, desiredSpeed, (desiredSpeed < car.aiSpeed ? 4.8 : 0.75) * dt);
 
@@ -270,52 +270,55 @@ function trafficBlocker(car) {
     if (other === car || other === player.inCar || other.dir !== car.dir || other.sign !== car.sign) continue;
     if (Math.abs(other.lane - car.lane) > LANE_WIDTH * 0.55) continue;
     const gap = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
-    const followDistance = car.bus || other.bus ? 150 : 110;
-    if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, gap };
+    const minGap = (car.w + other.w) / 2;
+    const followDistance = minGap + (car.bus || other.bus ? 92 : 58);
+    if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, gap, minGap };
   }
   return closest;
 }
 
 function resolveVehicleOverlaps() {
   const allVehicles = [...vehicles, ...cops];
-  for (let i = 0; i < allVehicles.length; i++) {
-    for (let j = i + 1; j < allVehicles.length; j++) {
-      const a = allVehicles[i];
-      const b = allVehicles[j];
-      const minDistance = vehicleRadius(a) + vehicleRadius(b) + 4;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const distance = Math.hypot(dx, dy) || 0.001;
-      if (distance >= minDistance) continue;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < allVehicles.length; i++) {
+      for (let j = i + 1; j < allVehicles.length; j++) {
+        const a = allVehicles[i];
+        const b = allVehicles[j];
+        const minDistance = vehicleRadius(a) + vehicleRadius(b) + 4;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const distance = Math.hypot(dx, dy) || 0.001;
+        if (distance >= minDistance) continue;
 
-      const overlap = minDistance - distance;
-      const nx = dx / distance;
-      const ny = dy / distance;
-      const aLocked = a === player.inCar;
-      const bLocked = b === player.inCar;
-      const aPush = bLocked ? 1 : aLocked ? 0 : 0.5;
-      const bPush = aLocked ? 1 : bLocked ? 0 : 0.5;
+        const overlap = minDistance - distance;
+        const nx = dx / distance;
+        const ny = dy / distance;
+        const aLocked = a === player.inCar;
+        const bLocked = b === player.inCar;
+        const aPush = bLocked ? 1 : aLocked ? 0 : 0.5;
+        const bPush = aLocked ? 1 : bLocked ? 0 : 0.5;
 
-      a.x -= nx * overlap * aPush;
-      a.y -= ny * overlap * aPush;
-      b.x += nx * overlap * bPush;
-      b.y += ny * overlap * bPush;
+        a.x -= nx * overlap * aPush;
+        a.y -= ny * overlap * aPush;
+        b.x += nx * overlap * bPush;
+        b.y += ny * overlap * bPush;
 
-      if (!aLocked) {
-        if (a.police) a.unstuckTimer = 0.25;
-        a.aiSpeed = Math.max(18, (a.aiSpeed || 80) * 0.58);
-        if (a.police) a.speed = Math.max(35, (a.speed || 80) * 0.65);
-      }
-      if (!bLocked) {
-        if (b.police) b.unstuckTimer = 0.25;
-        b.aiSpeed = Math.max(18, (b.aiSpeed || 80) * 0.58);
-        if (b.police) b.speed = Math.max(35, (b.speed || 80) * 0.65);
-      }
-      if (aLocked || bLocked) {
-        const playerCar = aLocked ? a : b;
-        playerCar.speed *= 0.48;
-        player.x = playerCar.x;
-        player.y = playerCar.y;
+        if (!aLocked) {
+          if (a.police) a.unstuckTimer = 0.25;
+          a.aiSpeed = Math.max(18, (a.aiSpeed || 80) * 0.58);
+          if (a.police) a.speed = Math.max(35, (a.speed || 80) * 0.65);
+        }
+        if (!bLocked) {
+          if (b.police) b.unstuckTimer = 0.25;
+          b.aiSpeed = Math.max(18, (b.aiSpeed || 80) * 0.58);
+          if (b.police) b.speed = Math.max(35, (b.speed || 80) * 0.65);
+        }
+        if (aLocked || bLocked) {
+          const playerCar = aLocked ? a : b;
+          playerCar.speed *= 0.48;
+          player.x = playerCar.x;
+          player.y = playerCar.y;
+        }
       }
     }
   }
@@ -732,6 +735,7 @@ function updateDebugTelemetry() {
   document.body.dataset.laneCount = String(LANE_OFFSETS.length * 2);
   document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
   document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8).length);
+  document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
 }
 
 function countVehicleOverlaps() {
@@ -743,6 +747,21 @@ function countVehicleOverlaps() {
     }
   }
   return overlaps;
+}
+
+function closestTrafficBuffer() {
+  let closest = Infinity;
+  for (let i = 0; i < vehicles.length; i++) {
+    for (let j = i + 1; j < vehicles.length; j++) {
+      const a = vehicles[i];
+      const b = vehicles[j];
+      if (a.dir !== b.dir || a.sign !== b.sign || Math.abs(a.lane - b.lane) > LANE_WIDTH * 0.55) continue;
+      const gap = Math.abs(a.dir === "h" ? b.x - a.x : b.y - a.y);
+      const buffer = gap - (a.w + b.w) / 2;
+      if (buffer >= 0) closest = Math.min(closest, buffer);
+    }
+  }
+  return Number.isFinite(closest) ? closest : 0;
 }
 
 function maxPoliceSpin() {
