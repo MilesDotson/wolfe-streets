@@ -19,6 +19,8 @@ const BLOCK = 420;
 const ROAD = 172;
 const LANE_WIDTH = 30;
 const LANE_OFFSETS = [22, 52];
+const SIGNAL_CYCLE = 18;
+const SIGNAL_YELLOW = 2.2;
 const STREAM_RADIUS = 1900;
 const MINIMAP_RANGE = 1500;
 const HOME = { x: 324, y: 324, name: "Wolfe House" };
@@ -187,13 +189,13 @@ function updateTraffic(dt) {
     if (car === player.inCar) continue;
     car.pathT += dt * car.aiSpeed;
     car.mergeCooldown = Math.max(0, (car.mergeCooldown || 0) - dt);
-    const blocker = trafficBlocker(car);
+    const blocker = nearestTrafficBlocker(car);
     let desiredSpeed = car.targetSpeed;
     if (blocker) {
-      if (shouldPass(car, blocker)) startLaneChange(car);
-      const stopDistance = blocker.minGap + (car.bus || blocker.bus ? 18 : 10);
-      const slowZone = blocker.minGap + (car.bus || blocker.bus ? 74 : 46);
-      desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.32, 0.96);
+      if (!blocker.signal && shouldPass(car, blocker)) startLaneChange(car);
+      const stopDistance = blocker.minGap + (blocker.signal ? 8 : car.bus || blocker.bus ? 18 : 10);
+      const slowZone = blocker.minGap + (blocker.signal ? 116 : car.bus || blocker.bus ? 74 : 46);
+      desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.18, 0.96);
     }
     car.aiSpeed = lerp(car.aiSpeed, desiredSpeed, (desiredSpeed < car.aiSpeed ? 4.8 : 0.75) * dt);
     recoverStuckTraffic(car, blocker, dt);
@@ -258,6 +260,10 @@ function isLaneClear(car, laneIndex) {
 }
 
 function recoverStuckTraffic(car, blocker, dt) {
+  if (blocker?.signal) {
+    car.stuckTimer = 0;
+    return;
+  }
   const stoppedByTraffic = blocker && car.aiSpeed < 9 && car.targetSpeed > 40;
   car.stuckTimer = stoppedByTraffic ? (car.stuckTimer || 0) + dt : 0;
   if (car.stuckTimer < 1.35) return;
@@ -348,6 +354,47 @@ function trafficBlocker(car) {
   return closest;
 }
 
+function nearestTrafficBlocker(car) {
+  const carBlocker = trafficBlocker(car);
+  const signalBlocker = trafficSignalBlocker(car);
+  if (!carBlocker) return signalBlocker;
+  if (!signalBlocker) return carBlocker;
+  return signalBlocker.gap < carBlocker.gap ? signalBlocker : carBlocker;
+}
+
+function trafficSignalBlocker(car) {
+  if (isMerging(car)) return null;
+  const along = car.dir === "h" ? car.x : car.y;
+  const nodeAlong = nextSignalNode(along, car.sign);
+  const roadCenter = Math.round((car.dir === "h" ? car.y : car.x) / BLOCK) * BLOCK;
+  const signal = car.dir === "h" ? trafficSignalAt(nodeAlong, roadCenter) : trafficSignalAt(roadCenter, nodeAlong);
+  if (signal.openDir === car.dir && signal.color !== "yellow") return null;
+
+  const distToNode = (nodeAlong - along) * car.sign;
+  if (distToNode < 0 || distToNode > ROAD * 1.15) return null;
+  const vehicleHalf = car.dir === "h" ? car.w / 2 : car.h / 2;
+  const stopLineGap = distToNode - ROAD / 2 + 12 - vehicleHalf;
+  if (stopLineGap < -vehicleHalf * 0.8) return null;
+  return { gap: Math.max(0, stopLineGap), minGap: 10, signal: true, bus: false };
+}
+
+function nextSignalNode(value, sign) {
+  return sign > 0 ? Math.floor(value / BLOCK) * BLOCK + BLOCK : Math.ceil(value / BLOCK) * BLOCK - BLOCK;
+}
+
+function trafficSignalAt(nodeX, nodeY) {
+  const offset = hashCell(Math.round(nodeX / BLOCK), Math.round(nodeY / BLOCK)) % 8;
+  const t = mod(state.time + offset, SIGNAL_CYCLE);
+  const half = SIGNAL_CYCLE / 2;
+  const horizontalHalf = t < half;
+  const phaseTime = horizontalHalf ? t : t - half;
+  const yellow = phaseTime > half - SIGNAL_YELLOW;
+  return {
+    openDir: horizontalHalf ? "h" : "v",
+    color: yellow ? "yellow" : "green",
+  };
+}
+
 function isMerging(car) {
   return Math.abs((car.targetLane ?? car.lane) - car.lane) > 2;
 }
@@ -436,17 +483,20 @@ function updatePeds(dt) {
   for (const ped of peds) {
     ped.wait -= dt;
     if (ped.wait <= 0) {
-      ped.angle += randRange(-1.4, 1.4);
-      ped.wait = randRange(0.7, 2.4);
+      choosePedDirection(ped);
+      ped.wait = randRange(0.9, 2.8);
     }
     const speed = ped.scared ? 110 : 38;
     const nx = ped.x + Math.cos(ped.angle) * speed * dt;
     const ny = ped.y + Math.sin(ped.angle) * speed * dt;
-    if (!hitsBuilding(nx, ny, 9) && isRoadish(nx, ny)) {
+    if (canPedMoveTo(ped, nx, ny)) {
       ped.x = nx;
       ped.y = ny;
+      ped.crossing = isStreetInterior(ped.x, ped.y);
     } else {
-      ped.angle += Math.PI * 0.6;
+      ped.crossing = false;
+      ped.angle = sidewalkHeading(ped) + randRange(-0.35, 0.35);
+      ped.wait = randRange(0.35, 1.1);
     }
     if (dist(ped, player) > STREAM_RADIUS * 0.82) resetPed(ped);
     ped.scared = dist(ped, player) < (player.inCar ? 120 : 58);
@@ -458,6 +508,59 @@ function updatePeds(dt) {
       spark(ped.x, ped.y, 7, "#ef476f");
     }
   }
+}
+
+function choosePedDirection(ped) {
+  if (ped.scared) {
+    ped.angle += randRange(-1.4, 1.4);
+    return;
+  }
+
+  const crossHeading = crossingHeading(ped);
+  if (nearCrosswalk(ped) && (ped.jaywalker || (rand() < 0.28 && pedestrianSignalAllows(ped, crossHeading)))) {
+    ped.angle = crossHeading;
+    ped.crossing = true;
+    return;
+  }
+
+  if (ped.jaywalker && rand() < 0.18) {
+    ped.angle = crossHeading + randRange(-0.18, 0.18);
+    ped.crossing = true;
+    return;
+  }
+
+  ped.angle = sidewalkHeading(ped) + randRange(-0.3, 0.3);
+}
+
+function canPedMoveTo(ped, x, y) {
+  if (hitsBuilding(x, y, 9) || !isPedWalkable(x, y)) return false;
+  if (ped.scared || ped.jaywalker || ped.crossing) return true;
+  if (!isStreetInterior(x, y)) return true;
+  return ped.crossing && nearCrosswalk({ x, y }) && pedestrianSignalAllows({ ...ped, x, y });
+}
+
+function pedestrianSignalAllows(ped, heading = ped.angle) {
+  const nodeX = Math.round(ped.x / BLOCK) * BLOCK;
+  const nodeY = Math.round(ped.y / BLOCK) * BLOCK;
+  const signal = trafficSignalAt(nodeX, nodeY);
+  const crossingDir = pedestrianCrossingDir(heading);
+  return signal.openDir !== crossingDir && signal.color === "green";
+}
+
+function pedestrianCrossingDir(heading) {
+  return Math.abs(Math.cos(heading)) > Math.abs(Math.sin(heading)) ? "h" : "v";
+}
+
+function crossingHeading(ped) {
+  const mx = Math.abs(mod(ped.x + BLOCK / 2, BLOCK) - BLOCK / 2);
+  const my = Math.abs(mod(ped.y + BLOCK / 2, BLOCK) - BLOCK / 2);
+  if (mx < my) return ped.x < Math.round(ped.x / BLOCK) * BLOCK ? 0 : Math.PI;
+  return ped.y < Math.round(ped.y / BLOCK) * BLOCK ? Math.PI / 2 : -Math.PI / 2;
+}
+
+function sidewalkHeading(ped) {
+  const base = ped.walkAxis === "v" ? Math.PI / 2 : 0;
+  return base + (ped.walkSign < 0 ? Math.PI : 0);
 }
 
 function updatePolice(dt) {
@@ -605,6 +708,7 @@ function drawWorld() {
   ctx.strokeStyle = "rgba(247,244,232,.16)";
   ctx.lineWidth = 3;
   drawLaneMarkings(left, top, right, bottom);
+  drawTrafficSignals(left, top, right, bottom);
 
   for (const b of visibleBuildings(left, top, right, bottom)) {
     ctx.fillStyle = b.color;
@@ -618,6 +722,49 @@ function drawWorld() {
   }
 
   drawDistrictWater(left, top, right, bottom);
+}
+
+function drawTrafficSignals(left, top, right, bottom) {
+  const firstRoadX = snapDown(left, BLOCK) - BLOCK;
+  const lastRoadX = right + BLOCK;
+  const firstRoadY = snapDown(top, BLOCK) - BLOCK;
+  const lastRoadY = bottom + BLOCK;
+  for (let x = firstRoadX; x <= lastRoadX; x += BLOCK) {
+    for (let y = firstRoadY; y <= lastRoadY; y += BLOCK) {
+      if (x + ROAD < left || x - ROAD > right || y + ROAD < top || y - ROAD > bottom) continue;
+      drawCrosswalks(x, y);
+      drawSignalHead(x - ROAD / 2 + 18, y - ROAD / 2 + 18, "h", trafficSignalAt(x, y));
+      drawSignalHead(x + ROAD / 2 - 18, y + ROAD / 2 - 18, "h", trafficSignalAt(x, y));
+      drawSignalHead(x + ROAD / 2 - 18, y - ROAD / 2 + 18, "v", trafficSignalAt(x, y));
+      drawSignalHead(x - ROAD / 2 + 18, y + ROAD / 2 - 18, "v", trafficSignalAt(x, y));
+    }
+  }
+}
+
+function drawCrosswalks(x, y) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(247,244,232,.18)";
+  ctx.lineWidth = 4;
+  ctx.setLineDash([12, 12]);
+  line(x - ROAD / 2 + 14, y - ROAD / 2 + 20, x + ROAD / 2 - 14, y - ROAD / 2 + 20);
+  line(x - ROAD / 2 + 14, y + ROAD / 2 - 20, x + ROAD / 2 - 14, y + ROAD / 2 - 20);
+  line(x - ROAD / 2 + 20, y - ROAD / 2 + 14, x - ROAD / 2 + 20, y + ROAD / 2 - 14);
+  line(x + ROAD / 2 - 20, y - ROAD / 2 + 14, x + ROAD / 2 - 20, y + ROAD / 2 - 14);
+  ctx.restore();
+}
+
+function drawSignalHead(x, y, dir, signal) {
+  const lit = signal.openDir === dir ? signal.color : "red";
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = "rgba(8,12,13,.82)";
+  roundRect(-8, -8, 16, 16, 4);
+  ctx.fill();
+  ctx.fillStyle = lit === "red" ? "#ef476f" : lit === "yellow" ? "#f2c94c" : "#06d6a0";
+  ctx.beginPath();
+  ctx.arc(0, 0, 4.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawLaneMarkings(left, top, right, bottom) {
@@ -736,6 +883,13 @@ function drawPed(ped) {
   ctx.beginPath();
   ctx.arc(0, 0, 8, 0, Math.PI * 2);
   ctx.fill();
+  if (ped.jaywalker) {
+    ctx.strokeStyle = "rgba(242,201,76,.78)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 10.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -841,6 +995,9 @@ function updateDebugTelemetry() {
   document.body.dataset.trafficPasses = String(state.trafficPasses || 0);
   document.body.dataset.trafficRecoveries = String(state.trafficRecoveries || 0);
   document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8).length);
+  document.body.dataset.redLightStops = String(vehicles.filter((vehicle) => trafficSignalBlocker(vehicle)).length);
+  document.body.dataset.pedsInStreet = String(peds.filter((ped) => isStreetInterior(ped.x, ped.y)).length);
+  document.body.dataset.jaywalkers = String(peds.filter((ped) => ped.jaywalker).length);
   document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
 }
 
@@ -928,7 +1085,17 @@ function spawnTraffic() {
 
 function spawnPeds() {
   for (let i = 0; i < 86; i++) {
-    const ped = { x: 0, y: 0, angle: randRange(0, Math.PI * 2), wait: randRange(0, 2), color: colors[Math.floor(rand() * colors.length)] };
+    const ped = {
+      x: 0,
+      y: 0,
+      angle: randRange(0, Math.PI * 2),
+      wait: randRange(0, 2),
+      jaywalker: rand() < 0.12,
+      crossing: false,
+      walkAxis: rand() > 0.5 ? "h" : "v",
+      walkSign: rand() > 0.5 ? 1 : -1,
+      color: colors[Math.floor(rand() * colors.length)],
+    };
     resetPed(ped);
     peds.push(ped);
   }
@@ -971,14 +1138,24 @@ function trafficLanePosition(dir, roadCenter, sign, laneIndex) {
 function resetPed(ped) {
   let tries = 0;
   do {
-    const angle = randRange(0, Math.PI * 2);
-    const radius = randRange(STREAM_RADIUS * 0.3, STREAM_RADIUS * 0.78);
-    ped.x = player.x + Math.cos(angle) * radius;
-    ped.y = player.y + Math.sin(angle) * radius;
+    const roadX = snapDown(player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS), BLOCK);
+    const roadY = snapDown(player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS), BLOCK);
+    const along = randRange(-BLOCK / 2 + ROAD / 2 + 28, BLOCK / 2 - ROAD / 2 - 28);
+    const side = rand() > 0.5 ? 1 : -1;
+    ped.walkAxis = rand() > 0.5 ? "h" : "v";
+    ped.walkSign = rand() > 0.5 ? 1 : -1;
+    if (ped.walkAxis === "h") {
+      ped.x = roadX + BLOCK / 2 + along;
+      ped.y = roadY + side * (ROAD / 2 + 20);
+    } else {
+      ped.x = roadX + side * (ROAD / 2 + 20);
+      ped.y = roadY + BLOCK / 2 + along;
+    }
     tries += 1;
-  } while (tries < 30 && (!isRoadish(ped.x, ped.y) || hitsBuilding(ped.x, ped.y, 10)));
-  ped.angle = randRange(0, Math.PI * 2);
+  } while (tries < 30 && (hitsBuilding(ped.x, ped.y, 10) || !isPedWalkable(ped.x, ped.y)));
+  ped.angle = sidewalkHeading(ped) + randRange(-0.25, 0.25);
   ped.wait = randRange(0.2, 2);
+  ped.crossing = false;
 }
 
 function resetCop(cop) {
@@ -1091,6 +1268,25 @@ function isRoadish(x, y) {
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
   return mx < ROAD * 0.55 || my < ROAD * 0.55 || isWaterDistrict(x);
+}
+
+function isStreetInterior(x, y) {
+  const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
+  const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
+  return mx < ROAD / 2 - 8 || my < ROAD / 2 - 8;
+}
+
+function isPedWalkable(x, y) {
+  const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
+  const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
+  const sidewalkBand = ROAD / 2 + 34;
+  return mx < sidewalkBand || my < sidewalkBand || isWaterDistrict(x);
+}
+
+function nearCrosswalk(point) {
+  const mx = Math.abs(mod(point.x + BLOCK / 2, BLOCK) - BLOCK / 2);
+  const my = Math.abs(mod(point.y + BLOCK / 2, BLOCK) - BLOCK / 2);
+  return mx < ROAD / 2 + 18 && my < ROAD / 2 + 18;
 }
 
 function isWaterDistrict(x) {
