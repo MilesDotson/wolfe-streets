@@ -196,6 +196,7 @@ function updateTraffic(dt) {
       desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.32, 0.96);
     }
     car.aiSpeed = lerp(car.aiSpeed, desiredSpeed, (desiredSpeed < car.aiSpeed ? 4.8 : 0.75) * dt);
+    recoverStuckTraffic(car, blocker, dt);
 
     maybeTurnAtIntersection(car);
     car.lane = lerp(car.lane, car.targetLane ?? car.lane, 4.5 * dt);
@@ -230,6 +231,7 @@ function shouldPass(car, blocker) {
   if (car.bus || car.mergeCooldown > 0 || blocker.gap < blocker.minGap + 10) return false;
   if ((car.targetLane ?? car.lane) !== car.lane) return false;
   if (car.targetSpeed < (blocker.aiSpeed || 0) + 18) return false;
+  if (nearIntersection(car)) return false;
   const nextLaneIndex = car.laneIndex === 0 ? 1 : 0;
   return isLaneClear(car, nextLaneIndex);
 }
@@ -253,6 +255,40 @@ function isLaneClear(car, laneIndex) {
     if (delta > -minGap - 34 && delta < minGap + 96) return false;
   }
   return true;
+}
+
+function recoverStuckTraffic(car, blocker, dt) {
+  const stoppedByTraffic = blocker && car.aiSpeed < 9 && car.targetSpeed > 40;
+  car.stuckTimer = stoppedByTraffic ? (car.stuckTimer || 0) + dt : 0;
+  if (car.stuckTimer < 1.35) return;
+
+  if (shouldPass(car, blocker)) {
+    startLaneChange(car);
+    car.aiSpeed = Math.max(car.aiSpeed, Math.min(car.targetSpeed, 42));
+    car.stuckTimer = 0;
+    return;
+  }
+
+  if (car.stuckTimer < 3.2 || nearIntersection(car)) return;
+  pullForwardToClearGap(car);
+  car.aiSpeed = Math.max(car.aiSpeed, Math.min(car.targetSpeed, 34));
+  car.mergeCooldown = 0.8;
+  car.stuckTimer = 0;
+  state.trafficRecoveries = (state.trafficRecoveries || 0) + 1;
+}
+
+function nearIntersection(car, margin = ROAD * 0.62) {
+  const along = car.dir === "h" ? car.x : car.y;
+  return Math.abs(along - Math.round(along / BLOCK) * BLOCK) < margin;
+}
+
+function pullForwardToClearGap(car) {
+  const blocker = trafficBlocker(car);
+  if (!blocker) return;
+  const clearGap = blocker.minGap + (car.bus || blocker.bus ? 44 : 30);
+  const target = car.dir === "h" ? blocker.x - car.sign * clearGap : blocker.y - car.sign * clearGap;
+  if (car.dir === "h") car.x = target;
+  else car.y = target;
 }
 
 function maybeTurnAtIntersection(car) {
@@ -302,6 +338,7 @@ function trafficBlocker(car) {
   let closest = null;
   for (const other of vehicles) {
     if (other === car || other === player.inCar || other.dir !== car.dir || other.sign !== car.sign) continue;
+    if (isMerging(other)) continue;
     if (Math.abs(other.lane - car.lane) > LANE_WIDTH * 0.55) continue;
     const gap = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
     const minGap = (car.w + other.w) / 2;
@@ -309,6 +346,10 @@ function trafficBlocker(car) {
     if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, gap, minGap };
   }
   return closest;
+}
+
+function isMerging(car) {
+  return Math.abs((car.targetLane ?? car.lane) - car.lane) > 2;
 }
 
 function resolveVehicleOverlaps() {
@@ -323,6 +364,8 @@ function resolveVehicleOverlaps() {
         const dy = b.y - a.y;
         const distance = Math.hypot(dx, dy) || 0.001;
         if (distance >= minDistance) continue;
+
+        if (separateLaneTraffic(a, b, minDistance, distance)) continue;
 
         const overlap = minDistance - distance;
         const nx = dx / distance;
@@ -356,6 +399,33 @@ function resolveVehicleOverlaps() {
       }
     }
   }
+}
+
+function separateLaneTraffic(a, b, minDistance, distance) {
+  if (a === player.inCar || b === player.inCar) return false;
+  if (a.police || b.police || a.dir !== b.dir || a.sign !== b.sign) return false;
+  if (Math.abs(a.lane - b.lane) > LANE_WIDTH * 0.75) return false;
+
+  const axisDelta = a.dir === "h" ? b.x - a.x : b.y - a.y;
+  const aheadSign = Math.sign(axisDelta) || a.sign;
+  const overlap = minDistance - distance;
+  const push = overlap * 0.5 + 1;
+  if (a.dir === "h") {
+    a.x -= aheadSign * push;
+    b.x += aheadSign * push;
+    a.y = a.lane;
+    b.y = b.lane;
+  } else {
+    a.y -= aheadSign * push;
+    b.y += aheadSign * push;
+    a.x = a.lane;
+    b.x = b.lane;
+  }
+  a.angle = a.dir === "h" ? (a.sign > 0 ? 0 : Math.PI) : a.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  b.angle = b.dir === "h" ? (b.sign > 0 ? 0 : Math.PI) : b.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  a.aiSpeed = Math.max(22, a.aiSpeed || 0);
+  b.aiSpeed = Math.max(22, b.aiSpeed || 0);
+  return true;
 }
 
 function vehicleRadius(vehicle) {
@@ -769,6 +839,7 @@ function updateDebugTelemetry() {
   document.body.dataset.laneCount = String(LANE_OFFSETS.length * 2);
   document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
   document.body.dataset.trafficPasses = String(state.trafficPasses || 0);
+  document.body.dataset.trafficRecoveries = String(state.trafficRecoveries || 0);
   document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8).length);
   document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
 }
