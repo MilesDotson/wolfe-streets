@@ -31,6 +31,7 @@ const STREAM_RADIUS = 1900;
 const MINIMAP_RANGE = 1500;
 const HOME = { x: 630, y: 630, name: "Wolfe House" };
 const HOME_SAFE_RADIUS = 82;
+const WATER_WIDTH = 550;
 const keys = new Set();
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
@@ -227,11 +228,12 @@ function updatePlayer(dt) {
   state.inputX = dx;
   state.inputY = dy;
   const mag = Math.hypot(dx, dy) || 1;
-  const speed = key("shift") ? 230 : 148;
+  const swimming = isWater(player.x, player.y);
+  const speed = swimming ? (key("shift") ? 92 : 58) : key("shift") ? 230 : 148;
   const nx = player.x + (dx / mag) * speed * dt;
   const ny = player.y + (dy / mag) * speed * dt;
-  if (!hitsBuilding(nx, player.y, player.r) && !isWater(nx, player.y)) player.x = nx;
-  if (!hitsBuilding(player.x, ny, player.r) && !isWater(player.x, ny)) player.y = ny;
+  if (!hitsBuilding(nx, player.y, player.r)) player.x = nx;
+  if (!hitsBuilding(player.x, ny, player.r)) player.y = ny;
   if (dx || dy) player.angle = Math.atan2(dy, dx);
   state.playerSpeed = dist({ x: prevX, y: prevY }, player) / Math.max(dt, 0.001);
   state.playerDriveSpeed = 0;
@@ -1247,7 +1249,7 @@ function drawPlayer() {
   ctx.save();
   ctx.translate(player.x, player.y);
   ctx.rotate(player.angle);
-  ctx.fillStyle = player.invuln > 0 && Math.floor(state.time * 12) % 2 ? "#ef476f" : "#f7f4e8";
+  ctx.fillStyle = player.invuln > 0 && Math.floor(state.time * 12) % 2 ? "#ef476f" : isWater(player.x, player.y) ? "#4cc9f0" : "#f7f4e8";
   ctx.beginPath();
   ctx.arc(0, 0, player.r, 0, Math.PI * 2);
   ctx.fill();
@@ -1374,7 +1376,7 @@ function drawMissionMiniMarker(point, scale, center) {
 }
 
 function updateHud() {
-  ui.mode.textContent = state.gameOver ? "Game over" : player.inCar ? `Driving ${Math.round(Math.abs(player.inCar.speed))} mph` : "On foot";
+  ui.mode.textContent = state.gameOver ? "Game over" : player.inCar ? `Driving ${Math.round(Math.abs(player.inCar.speed))} mph` : isWater(player.x, player.y) ? "Swimming" : "On foot";
   ui.cash.textContent = `$${state.cash}`;
   ui.heat.textContent = Math.floor(state.heat).toString();
   updatePoliceActivityIcon();
@@ -1445,6 +1447,8 @@ function updateDebugTelemetry() {
   document.body.dataset.playerAtHome = String(dist(player, HOME) < 8);
   document.body.dataset.playerInHideout = String(isHomeSafeZone(player));
   document.body.dataset.playerInWater = String(isWater(player.x, player.y));
+  document.body.dataset.playerOnBridge = String(isBridge(player.x, player.y));
+  document.body.dataset.swimming = String(!player.inCar && isWater(player.x, player.y));
   document.body.dataset.homeName = HOME.name;
   document.body.dataset.running = String(state.running);
   document.body.dataset.gameOver = String(state.gameOver);
@@ -1841,29 +1845,51 @@ function drawDistrictWater(left, top, right, bottom) {
   ctx.fillStyle = "#174d54";
   for (let x = start; x <= right; x += BLOCK * 12) {
     const waterX = x + BLOCK * 8.7;
-    if (waterX + 550 < left || waterX > right) continue;
-    ctx.fillRect(waterX, top, 550, bottom - top);
+    if (waterX + WATER_WIDTH < left || waterX > right) continue;
+    ctx.fillRect(waterX, top, WATER_WIDTH, bottom - top);
     ctx.fillStyle = "rgba(255,255,255,.12)";
     for (let y = snapDown(top, 90); y < bottom; y += 90) ctx.fillRect(waterX - 10, y, 70, 20);
     ctx.fillStyle = "#174d54";
+    drawWaterBridges(waterX, top, bottom);
+  }
+}
+
+function drawWaterBridges(waterX, top, bottom) {
+  const bridgeLeft = waterX - 34;
+  const bridgeWidth = WATER_WIDTH + 68;
+  for (let y = snapDown(top, BLOCK) - BLOCK; y <= bottom + BLOCK; y += BLOCK) {
+    ctx.fillStyle = "#202928";
+    ctx.fillRect(bridgeLeft, y - ROAD / 2, bridgeWidth, ROAD);
+    ctx.fillStyle = "rgba(247,244,232,.12)";
+    ctx.fillRect(bridgeLeft, y - ROAD / 2 + 9, bridgeWidth, 3);
+    ctx.fillRect(bridgeLeft, y + ROAD / 2 - 12, bridgeWidth, 3);
+    ctx.strokeStyle = "rgba(242,201,76,.72)";
+    ctx.lineWidth = 2;
+    line(bridgeLeft, y - 3, bridgeLeft + bridgeWidth, y - 3);
+    line(bridgeLeft, y + 3, bridgeLeft + bridgeWidth, y + 3);
+    ctx.setLineDash([20, 22]);
+    ctx.strokeStyle = "rgba(247,244,232,.28)";
+    line(bridgeLeft, y - LANE_WIDTH, bridgeLeft + bridgeWidth, y - LANE_WIDTH);
+    line(bridgeLeft, y + LANE_WIDTH, bridgeLeft + bridgeWidth, y + LANE_WIDTH);
+    ctx.setLineDash([]);
   }
 }
 
 function isRoadish(x, y) {
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
-  return !isWater(x, y) && (mx < ROAD * 0.55 || my < ROAD * 0.55);
+  return isBridge(x, y) || (!isWater(x, y) && (mx < ROAD * 0.55 || my < ROAD * 0.55));
 }
 
 function isStreetInterior(x, y) {
-  if (isWater(x, y)) return false;
+  if (isWater(x, y) && !isBridge(x, y)) return false;
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
   return mx < ROAD / 2 - 8 || my < ROAD / 2 - 8;
 }
 
 function isPedWalkable(x, y) {
-  if (isWater(x, y)) return false;
+  if (isWater(x, y) && !isBridge(x, y)) return false;
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
   const sidewalkBand = ROAD / 2 + 34;
@@ -1877,11 +1903,17 @@ function nearCrosswalk(point) {
 }
 
 function isWaterDistrict(x) {
-  return mod(x - BLOCK * 8.7, BLOCK * 12) < 550;
+  return mod(x - BLOCK * 8.7, BLOCK * 12) < WATER_WIDTH;
 }
 
 function isWater(x, y) {
-  return isWaterDistrict(x) && Number.isFinite(y);
+  return isWaterDistrict(x) && Number.isFinite(y) && !isBridge(x, y);
+}
+
+function isBridge(x, y) {
+  if (!isWaterDistrict(x) || !Number.isFinite(y)) return false;
+  const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
+  return my < ROAD / 2;
 }
 
 function policeNoise(amount) {
@@ -1901,6 +1933,8 @@ function hurt(amount) {
 }
 
 function sendHomeFromHospital() {
+  const jobFailed = activeJob.started;
+  if (jobFailed) activeJob = makeJob(state.currentMission);
   const lifeState = applyLifeLoss(state.lives);
   state.lives = lifeState.lives;
   if (lifeState.gameOver) {
@@ -1918,7 +1952,7 @@ function sendHomeFromHospital() {
   state.lastLaw = "clear";
   state.homeSafeTimer = 0;
   state.waterTimer = 0;
-  toast(`Discharged from hospital. ${state.lives} lives left.`);
+  toast(jobFailed ? `Job failed. Discharged from hospital. ${state.lives} lives left.` : `Discharged from hospital. ${state.lives} lives left.`);
 }
 
 function triggerGameOver() {
