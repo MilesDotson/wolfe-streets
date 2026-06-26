@@ -41,10 +41,21 @@
       </section>
 
       <section id="testPanel" class="hidden" aria-label="Simulation test panel"></section>
+      <section id="mobileControls" aria-label="Mobile controls">
+        <div id="joystick" aria-label="Move joystick">
+          <span id="joystickKnob"></span>
+        </div>
+        <div id="mobileButtons">
+          <button class="touch-button secondary" type="button" data-touch="mission" aria-label="Next job">M</button>
+          <button class="touch-button primary" type="button" data-touch="interact" aria-label="Enter vehicle or interact">E</button>
+          <button class="touch-button secondary" type="button" data-touch="brake" aria-label="Handbrake">B</button>
+          <button class="touch-button primary" type="button" data-touch="boost" aria-label="Sprint or boost">↑</button>
+        </div>
+      </section>
       <button id="start" type="button">Start Game</button>
       <div id="toast"></div>
     </main>
 
-    <script type="module" src="src/game.js?v=bridge-swim-1"></script>
+    <script type="module" src="src/game.js?v=mobile-controls-1"></script>
   </body>
 </html>

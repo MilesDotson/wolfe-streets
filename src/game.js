@@ -19,6 +19,9 @@ const ui = {
   testPanel: document.querySelector("#testPanel"),
   start: document.querySelector("#start"),
   toast: document.querySelector("#toast"),
+  joystick: document.querySelector("#joystick"),
+  joystickKnob: document.querySelector("#joystickKnob"),
+  mobileButtons: document.querySelectorAll(".touch-button"),
 };
 
 const BLOCK = 420;
@@ -33,6 +36,7 @@ const HOME = { x: 630, y: 630, name: "Wolfe House" };
 const HOME_SAFE_RADIUS = 82;
 const WATER_WIDTH = 550;
 const keys = new Set();
+const touchInput = { active: false, x: 0, y: 0, boost: false, brake: false };
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
 const busColors = ["#f2c94c", "#4cc9f0", "#8fd694", "#f7f4e8"];
@@ -134,9 +138,13 @@ window.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "m") cycleMission();
 });
 window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
-window.addEventListener("blur", () => keys.clear());
+window.addEventListener("blur", () => {
+  keys.clear();
+  resetTouchInput();
+});
 canvas.addEventListener("pointerdown", () => canvas.focus());
 ui.start.addEventListener("click", startGame);
+setupMobileControls();
 
 function startGame() {
   if (state.gameOver) resetGame();
@@ -146,6 +154,78 @@ function startGame() {
   canvas.focus();
   toast(`Leaving ${HOME.name}. Find the yellow marker.`);
   requestAnimationFrame(tick);
+}
+
+function setupMobileControls() {
+  if (!ui.joystick || !ui.joystickKnob) return;
+  const moveJoystick = (event) => {
+    event.preventDefault();
+    if (!state.running) startGame();
+    const rect = ui.joystick.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const max = rect.width * 0.34;
+    const rawX = event.clientX - cx;
+    const rawY = event.clientY - cy;
+    const length = Math.hypot(rawX, rawY);
+    const scale = length > max ? max / length : 1;
+    const x = rawX * scale;
+    const y = rawY * scale;
+    touchInput.active = true;
+    touchInput.x = clamp(x / max, -1, 1);
+    touchInput.y = clamp(y / max, -1, 1);
+    ui.joystickKnob.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+  };
+  const releaseJoystick = (event) => {
+    event.preventDefault();
+    touchInput.active = false;
+    touchInput.x = 0;
+    touchInput.y = 0;
+    ui.joystickKnob.style.transform = "translate(-50%, -50%)";
+  };
+
+  ui.joystick.addEventListener("pointerdown", (event) => {
+    ui.joystick.setPointerCapture(event.pointerId);
+    moveJoystick(event);
+  });
+  ui.joystick.addEventListener("pointermove", (event) => {
+    if (touchInput.active) moveJoystick(event);
+  });
+  ui.joystick.addEventListener("pointerup", releaseJoystick);
+  ui.joystick.addEventListener("pointercancel", releaseJoystick);
+
+  for (const button of ui.mobileButtons) {
+    const action = button.dataset.touch;
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      if (!state.running) startGame();
+      button.setPointerCapture(event.pointerId);
+      button.classList.add("active");
+      if (action === "boost") touchInput.boost = true;
+      else if (action === "brake") touchInput.brake = true;
+      else if (action === "interact") interact();
+      else if (action === "mission") cycleMission();
+    });
+    const releaseButton = (event) => {
+      event.preventDefault();
+      button.classList.remove("active");
+      if (action === "boost") touchInput.boost = false;
+      if (action === "brake") touchInput.brake = false;
+    };
+    button.addEventListener("pointerup", releaseButton);
+    button.addEventListener("pointercancel", releaseButton);
+    button.addEventListener("lostpointercapture", releaseButton);
+  }
+}
+
+function resetTouchInput() {
+  touchInput.active = false;
+  touchInput.x = 0;
+  touchInput.y = 0;
+  touchInput.boost = false;
+  touchInput.brake = false;
+  if (ui.joystickKnob) ui.joystickKnob.style.transform = "translate(-50%, -50%)";
+  for (const button of ui.mobileButtons) button.classList.remove("active");
 }
 
 function tick(now) {
@@ -189,9 +269,9 @@ function updatePlayer(dt) {
   const prevY = player.y;
   if (player.inCar) {
     const car = player.inCar;
-    const steer = key("a", "arrowleft") ? -1 : key("d", "arrowright") ? 1 : 0;
+    const steer = touchInput.active ? touchInput.x : key("a", "arrowleft") ? -1 : key("d", "arrowright") ? 1 : 0;
     const testCruise = state.testMode && state.testScenario === "drive" && !key("w", "arrowup", "s", "arrowdown");
-    const gas = key("w", "arrowup") ? 1 : key("s", "arrowdown") ? -0.65 : testCruise ? 0.55 : 0;
+    const gas = touchInput.active ? clamp(-touchInput.y, -0.65, 1) : key("w", "arrowup") ? 1 : key("s", "arrowdown") ? -0.65 : testCruise ? 0.55 : 0;
     const boost = key("shift") ? 1.35 : 1;
     car.speed += gas * car.accel * boost * dt;
     car.speed *= key(" ") ? 0.9 : 0.985;
@@ -223,8 +303,8 @@ function updatePlayer(dt) {
     return;
   }
 
-  const dx = (key("d", "arrowright") ? 1 : 0) - (key("a", "arrowleft") ? 1 : 0);
-  const dy = (key("s", "arrowdown") ? 1 : 0) - (key("w", "arrowup") ? 1 : 0);
+  const dx = touchInput.active ? touchInput.x : (key("d", "arrowright") ? 1 : 0) - (key("a", "arrowleft") ? 1 : 0);
+  const dy = touchInput.active ? touchInput.y : (key("s", "arrowdown") ? 1 : 0) - (key("w", "arrowup") ? 1 : 0);
   state.inputX = dx;
   state.inputY = dy;
   const mag = Math.hypot(dx, dy) || 1;
@@ -1462,6 +1542,11 @@ function updateDebugTelemetry() {
   document.body.dataset.wrongSideDriving = String(player.inCar ? isWrongSideDriving(player.inCar) : false);
   document.body.dataset.playerSpeed = state.playerSpeed.toFixed(2);
   document.body.dataset.playerDriveSpeed = state.playerDriveSpeed.toFixed(2);
+  document.body.dataset.touchActive = String(touchInput.active);
+  document.body.dataset.touchX = touchInput.x.toFixed(2);
+  document.body.dataset.touchY = touchInput.y.toFixed(2);
+  document.body.dataset.touchBoost = String(touchInput.boost);
+  document.body.dataset.touchBrake = String(touchInput.brake);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
   document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
@@ -2044,7 +2129,7 @@ function roundRect(x, y, w, h, r) {
 }
 
 function key(...names) {
-  return names.some((name) => keys.has(name));
+  return names.some((name) => keys.has(name) || (name === "shift" && touchInput.boost) || (name === " " && touchInput.brake));
 }
 
 function near(point, radius) {
