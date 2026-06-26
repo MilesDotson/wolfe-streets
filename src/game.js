@@ -30,6 +30,7 @@ const SIGNAL_YELLOW = 2.2;
 const STREAM_RADIUS = 1900;
 const MINIMAP_RANGE = 1500;
 const HOME = { x: 630, y: 630, name: "Wolfe House" };
+const HOME_SAFE_RADIUS = 82;
 const keys = new Set();
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
@@ -58,6 +59,8 @@ const state = {
   lawCooldown: 0,
   wrongSideTimer: 0,
   lastLaw: "clear",
+  homeSafeTimer: 0,
+  waterTimer: 0,
   camera: { x: 0, y: 0 },
 };
 
@@ -167,6 +170,7 @@ function update(dt) {
   state.lawCooldown = Math.max(0, state.lawCooldown - dt);
   player.invuln = Math.max(0, player.invuln - dt);
   updatePlayer(dt);
+  updateHomeSafeZone(dt);
   updateTraffic(dt);
   updatePeds(dt);
   updatePolice(dt);
@@ -204,6 +208,8 @@ function updatePlayer(dt) {
       reportLawBreak("property damage", 0.85, 1.4);
       spark(car.x, car.y, 14, "#f2c94c");
     }
+    if (isWater(car.x, car.y)) handleVehicleWater(car, dt);
+    else state.waterTimer = 0;
     updateDrivingLawState(car, dt);
     player.x = car.x;
     player.y = car.y;
@@ -224,11 +230,48 @@ function updatePlayer(dt) {
   const speed = key("shift") ? 230 : 148;
   const nx = player.x + (dx / mag) * speed * dt;
   const ny = player.y + (dy / mag) * speed * dt;
-  if (!hitsBuilding(nx, player.y, player.r)) player.x = nx;
-  if (!hitsBuilding(player.x, ny, player.r)) player.y = ny;
+  if (!hitsBuilding(nx, player.y, player.r) && !isWater(nx, player.y)) player.x = nx;
+  if (!hitsBuilding(player.x, ny, player.r) && !isWater(player.x, ny)) player.y = ny;
   if (dx || dy) player.angle = Math.atan2(dy, dx);
   state.playerSpeed = dist({ x: prevX, y: prevY }, player) / Math.max(dt, 0.001);
   state.playerDriveSpeed = 0;
+}
+
+function updateHomeSafeZone(dt) {
+  const safe = isHomeSafeZone(player);
+  state.homeSafeTimer = safe ? state.homeSafeTimer + dt : 0;
+  if (!safe) return;
+  state.heat = 0;
+  state.wantedTimer = 0;
+  state.lawCooldown = 0;
+  state.wrongSideTimer = 0;
+  state.lastLaw = "safe at hideout";
+  player.health = Math.min(100, player.health + 18 * dt);
+  if (state.homeSafeTimer > 0.25 && state.homeSafeTimer - dt <= 0.25) toast("Safe at Wolfe House");
+}
+
+function isHomeSafeZone(point) {
+  return dist(point, HOME) <= HOME_SAFE_RADIUS;
+}
+
+function handleVehicleWater(car, dt) {
+  state.waterTimer += dt;
+  car.speed *= 0.82;
+  car.aiSpeed = 0;
+  spark(car.x, car.y, 3, "#4cc9f0");
+  if (state.waterTimer > 0.55) {
+    hurt(40);
+    car.x -= Math.cos(car.angle) * 46;
+    car.y -= Math.sin(car.angle) * 46;
+    car.speed = 0;
+    player.x = car.x;
+    player.y = car.y;
+    if (state.waterTimer > 1.4) {
+      toast("Vehicle flooded");
+      sendHomeFromHospital();
+      state.waterTimer = 0;
+    }
+  }
 }
 
 function updateTraffic(dt) {
@@ -259,6 +302,7 @@ function updateTraffic(dt) {
       car.x = lane;
       car.angle = car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
     }
+    if (isWater(car.x, car.y)) resetTrafficCar(car, vehicles.indexOf(car));
     if (dist(car, player) > STREAM_RADIUS) resetTrafficCar(car, vehicles.indexOf(car));
     if (dist(car, player) < (player.inCar ? 44 : 26)) {
       if (player.inCar) {
@@ -805,7 +849,7 @@ function updatePolice(dt) {
     cop.contactCooldown = Math.max(0, (cop.contactCooldown || 0) - dt);
     cop.boostCooldown = Math.max(0, (cop.boostCooldown || 0) - dt);
     const distanceToPlayer = dist(cop, player);
-    const pursuit = state.heat >= 1 && distanceToPlayer < 1450;
+    const pursuit = state.heat >= 1 && distanceToPlayer < 1450 && !isHomeSafeZone(player);
     if (!pursuit) {
       updatePolicePatrol(cop, dt);
       continue;
@@ -870,7 +914,7 @@ function updatePolicePatrol(cop, dt) {
     cop.angle = cop.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
   }
   cop.speed = cop.aiSpeed;
-  if (hitsBuilding(cop.x, cop.y, 24) || dist(cop, player) > STREAM_RADIUS * 1.2) resetCop(cop);
+  if (hitsBuilding(cop.x, cop.y, 24) || isWater(cop.x, cop.y) || dist(cop, player) > STREAM_RADIUS * 1.2) resetCop(cop);
 }
 
 function ensurePolicePatrolRoute(cop) {
@@ -1169,6 +1213,15 @@ function drawMarkers() {
 function drawHomeMarker() {
   ctx.save();
   ctx.translate(HOME.x, HOME.y);
+  ctx.fillStyle = "rgba(6,214,160,.08)";
+  ctx.beginPath();
+  ctx.arc(0, 0, HOME_SAFE_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(6,214,160,.34)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 10]);
+  ctx.stroke();
+  ctx.setLineDash([]);
   ctx.fillStyle = "rgba(6,214,160,.18)";
   ctx.beginPath();
   ctx.arc(0, 0, 28, 0, Math.PI * 2);
@@ -1390,6 +1443,8 @@ function updateDebugTelemetry() {
   document.body.dataset.playerBlocked = String(hitsBuilding(player.x, player.y, player.r));
   document.body.dataset.playerOnRoad = String(isRoadish(player.x, player.y));
   document.body.dataset.playerAtHome = String(dist(player, HOME) < 8);
+  document.body.dataset.playerInHideout = String(isHomeSafeZone(player));
+  document.body.dataset.playerInWater = String(isWater(player.x, player.y));
   document.body.dataset.homeName = HOME.name;
   document.body.dataset.running = String(state.running);
   document.body.dataset.gameOver = String(state.gameOver);
@@ -1624,18 +1679,22 @@ function spawnCops() {
 }
 
 function resetTrafficCar(car, index = 0) {
-  const horizontal = rand() > 0.5;
-  const offset = STREAM_RADIUS * 0.35 + randRange(0, STREAM_RADIUS * 0.65);
-  const side = index % 2 === 0 ? 1 : -1;
-  const laneBase = horizontal ? player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS) : player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS);
-  car.dir = horizontal ? "h" : "v";
-  car.sign = rand() > 0.5 ? 1 : -1;
-  car.laneIndex = Math.floor(randRange(0, 2));
-  car.lane = trafficLanePosition(car.dir, snapDown(laneBase, BLOCK), car.sign, car.laneIndex);
-  car.targetLane = car.lane;
-  car.x = horizontal ? player.x + side * offset : car.lane;
-  car.y = horizontal ? car.lane : player.y + side * offset;
-  car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  let tries = 0;
+  do {
+    const horizontal = rand() > 0.5;
+    const offset = STREAM_RADIUS * 0.35 + randRange(0, STREAM_RADIUS * 0.65);
+    const side = index % 2 === 0 ? 1 : -1;
+    const laneBase = horizontal ? player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS) : player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS);
+    car.dir = horizontal ? "h" : "v";
+    car.sign = rand() > 0.5 ? 1 : -1;
+    car.laneIndex = Math.floor(randRange(0, 2));
+    car.lane = trafficLanePosition(car.dir, snapDown(laneBase, BLOCK), car.sign, car.laneIndex);
+    car.targetLane = car.lane;
+    car.x = horizontal ? player.x + side * offset : car.lane;
+    car.y = horizontal ? car.lane : player.y + side * offset;
+    car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+    tries += 1;
+  } while (tries < 20 && isWater(car.x, car.y));
   car.aiSpeed = car.bus ? randRange(54, 96) : randRange(70, 150);
   car.targetSpeed = car.bus ? randRange(58, 102) : randRange(78, 150);
   car.lastNode = "";
@@ -1673,18 +1732,22 @@ function resetPed(ped) {
 }
 
 function resetCop(cop) {
-  const horizontal = rand() > 0.5;
-  const offset = STREAM_RADIUS * 0.45 + randRange(0, STREAM_RADIUS * 0.45);
-  const side = rand() > 0.5 ? 1 : -1;
-  const laneBase = horizontal ? player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS) : player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS);
-  cop.dir = horizontal ? "h" : "v";
-  cop.sign = rand() > 0.5 ? 1 : -1;
-  cop.laneIndex = Math.floor(randRange(0, 2));
-  cop.lane = trafficLanePosition(cop.dir, snapDown(laneBase, BLOCK), cop.sign, cop.laneIndex);
-  cop.targetLane = cop.lane;
-  cop.x = horizontal ? player.x + side * offset : cop.lane;
-  cop.y = horizontal ? cop.lane : player.y + side * offset;
-  cop.angle = horizontal ? (cop.sign > 0 ? 0 : Math.PI) : cop.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  let tries = 0;
+  do {
+    const horizontal = rand() > 0.5;
+    const offset = STREAM_RADIUS * 0.45 + randRange(0, STREAM_RADIUS * 0.45);
+    const side = rand() > 0.5 ? 1 : -1;
+    const laneBase = horizontal ? player.y + randRange(-STREAM_RADIUS, STREAM_RADIUS) : player.x + randRange(-STREAM_RADIUS, STREAM_RADIUS);
+    cop.dir = horizontal ? "h" : "v";
+    cop.sign = rand() > 0.5 ? 1 : -1;
+    cop.laneIndex = Math.floor(randRange(0, 2));
+    cop.lane = trafficLanePosition(cop.dir, snapDown(laneBase, BLOCK), cop.sign, cop.laneIndex);
+    cop.targetLane = cop.lane;
+    cop.x = horizontal ? player.x + side * offset : cop.lane;
+    cop.y = horizontal ? cop.lane : player.y + side * offset;
+    cop.angle = horizontal ? (cop.sign > 0 ? 0 : Math.PI) : cop.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+    tries += 1;
+  } while (tries < 20 && isWater(cop.x, cop.y));
   cop.speed = 80;
   cop.aiSpeed = randRange(58, 98);
   cop.targetSpeed = randRange(72, 108);
@@ -1789,20 +1852,22 @@ function drawDistrictWater(left, top, right, bottom) {
 function isRoadish(x, y) {
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
-  return mx < ROAD * 0.55 || my < ROAD * 0.55 || isWaterDistrict(x);
+  return !isWater(x, y) && (mx < ROAD * 0.55 || my < ROAD * 0.55);
 }
 
 function isStreetInterior(x, y) {
+  if (isWater(x, y)) return false;
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
   return mx < ROAD / 2 - 8 || my < ROAD / 2 - 8;
 }
 
 function isPedWalkable(x, y) {
+  if (isWater(x, y)) return false;
   const mx = Math.abs(mod(x + BLOCK / 2, BLOCK) - BLOCK / 2);
   const my = Math.abs(mod(y + BLOCK / 2, BLOCK) - BLOCK / 2);
   const sidewalkBand = ROAD / 2 + 34;
-  return mx < sidewalkBand || my < sidewalkBand || isWaterDistrict(x);
+  return mx < sidewalkBand || my < sidewalkBand;
 }
 
 function nearCrosswalk(point) {
@@ -1813,6 +1878,10 @@ function nearCrosswalk(point) {
 
 function isWaterDistrict(x) {
   return mod(x - BLOCK * 8.7, BLOCK * 12) < 550;
+}
+
+function isWater(x, y) {
+  return isWaterDistrict(x) && Number.isFinite(y);
 }
 
 function policeNoise(amount) {
@@ -1847,6 +1916,8 @@ function sendHomeFromHospital() {
   state.lawCooldown = 0;
   state.wrongSideTimer = 0;
   state.lastLaw = "clear";
+  state.homeSafeTimer = 0;
+  state.waterTimer = 0;
   toast(`Discharged from hospital. ${state.lives} lives left.`);
 }
 
@@ -1858,6 +1929,8 @@ function triggerGameOver() {
   state.lawCooldown = 0;
   state.wrongSideTimer = 0;
   state.lastLaw = "clear";
+  state.homeSafeTimer = 0;
+  state.waterTimer = 0;
   player.health = 0;
   player.inCar = null;
   ui.start.textContent = "Restart Game";
@@ -1873,6 +1946,8 @@ function resetGame() {
   state.lawCooldown = 0;
   state.wrongSideTimer = 0;
   state.lastLaw = "clear";
+  state.homeSafeTimer = 0;
+  state.waterTimer = 0;
   state.cash = Number(localStorage.getItem("wolfe.cash") || 0);
   state.rep = Number(localStorage.getItem("wolfe.rep") || 0);
   state.currentMission = 0;
