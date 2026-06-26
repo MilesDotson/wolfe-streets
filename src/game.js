@@ -151,6 +151,7 @@ function update(dt) {
   updatePeds(dt);
   updatePolice(dt);
   resolveVehicleOverlaps();
+  resolveTrafficGaps();
   updateParticles(dt);
   updateMission(dt);
   updateCamera(dt);
@@ -285,7 +286,7 @@ function isLaneClear(car, laneIndex) {
 }
 
 function recoverStuckTraffic(car, blocker, dt) {
-  if (blocker?.signal) {
+  if (blocker?.signal || blocker?.intersection || isQueuedLeadVehicle(blocker?.vehicle)) {
     car.stuckTimer = 0;
     return;
   }
@@ -373,18 +374,23 @@ function trafficBlocker(car) {
     if (Math.abs(other.lane - car.lane) > LANE_WIDTH * 0.55) continue;
     const gap = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
     const minGap = (car.w + other.w) / 2;
-    const followDistance = minGap + (car.bus || other.bus ? 92 : 58);
-    if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, gap, minGap };
+    const followDistance = minGap + (car.bus || other.bus ? 150 : 96) + car.aiSpeed * 1.25;
+    if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, vehicle: other, gap, minGap };
   }
   return closest;
+}
+
+function isQueuedLeadVehicle(vehicle) {
+  return vehicle && vehicle.aiSpeed < 12 && (trafficSignalBlocker(vehicle) || intersectionBoxBlocker(vehicle));
 }
 
 function nearestTrafficBlocker(car) {
   const carBlocker = trafficBlocker(car);
   const signalBlocker = trafficSignalBlocker(car);
-  if (!carBlocker) return signalBlocker;
-  if (!signalBlocker) return carBlocker;
-  return signalBlocker.gap < carBlocker.gap ? signalBlocker : carBlocker;
+  const intersectionBlocker = intersectionBoxBlocker(car);
+  return [carBlocker, signalBlocker, intersectionBlocker]
+    .filter(Boolean)
+    .sort((a, b) => a.gap - b.gap)[0] || null;
 }
 
 function trafficSignalBlocker(car) {
@@ -401,6 +407,44 @@ function trafficSignalBlocker(car) {
   const stopLineGap = distToNode - ROAD / 2 + 12 - vehicleHalf;
   if (stopLineGap < -vehicleHalf * 0.8) return null;
   return { gap: Math.max(0, stopLineGap), minGap: 10, signal: true, bus: false };
+}
+
+function intersectionBoxBlocker(car) {
+  if (isMerging(car)) return null;
+  const along = car.dir === "h" ? car.x : car.y;
+  const nodeAlong = nextSignalNode(along, car.sign);
+  const crossRoad = Math.round((car.dir === "h" ? car.y : car.x) / BLOCK) * BLOCK;
+  const nodeX = car.dir === "h" ? nodeAlong : crossRoad;
+  const nodeY = car.dir === "h" ? crossRoad : nodeAlong;
+  const distToNode = (nodeAlong - along) * car.sign;
+  if (distToNode < ROAD / 2 || distToNode > ROAD * 1.4) return null;
+
+  const vehicleHalf = car.dir === "h" ? car.w / 2 : car.h / 2;
+  const stopLineGap = distToNode - ROAD / 2 + 16 - vehicleHalf;
+  if (stopLineGap < -vehicleHalf * 0.6) return null;
+  if (!intersectionOccupied(car, nodeX, nodeY) && exitLaneClear(car, nodeX, nodeY)) return null;
+  return { gap: Math.max(0, stopLineGap), minGap: 12, intersection: true, bus: false };
+}
+
+function intersectionOccupied(car, nodeX, nodeY) {
+  const half = ROAD / 2 - 10;
+  for (const other of vehicles) {
+    if (other === car || other === player.inCar) continue;
+    if (Math.abs(other.x - nodeX) < half && Math.abs(other.y - nodeY) < half) return true;
+  }
+  return false;
+}
+
+function exitLaneClear(car, nodeX, nodeY) {
+  const exitDistance = car.bus ? 190 : 150;
+  const lane = trafficLanePosition(car.dir, car.dir === "h" ? nodeY : nodeX, car.sign, car.laneIndex);
+  for (const other of vehicles) {
+    if (other === car || other === player.inCar || other.dir !== car.dir || other.sign !== car.sign) continue;
+    if (Math.abs((other.targetLane ?? other.lane) - lane) > LANE_WIDTH * 0.65) continue;
+    const alongDelta = car.dir === "h" ? (other.x - nodeX) * car.sign : (other.y - nodeY) * car.sign;
+    if (alongDelta > ROAD / 2 - 8 && alongDelta < ROAD / 2 + exitDistance) return false;
+  }
+  return true;
 }
 
 function nextSignalNode(value, sign) {
@@ -498,6 +542,44 @@ function separateLaneTraffic(a, b, minDistance, distance) {
   a.aiSpeed = Math.max(22, a.aiSpeed || 0);
   b.aiSpeed = Math.max(22, b.aiSpeed || 0);
   return true;
+}
+
+function resolveTrafficGaps() {
+  const groups = new Map();
+  for (const car of vehicles) {
+    if (car === player.inCar || isMerging(car)) continue;
+    const laneKey = `${car.dir}:${car.sign}:${Math.round(car.lane / 4)}`;
+    if (!groups.has(laneKey)) groups.set(laneKey, []);
+    groups.get(laneKey).push(car);
+  }
+
+  let corrections = 0;
+  for (const laneCars of groups.values()) {
+    laneCars.sort((a, b) => trafficProgress(a) - trafficProgress(b));
+    for (let i = 1; i < laneCars.length; i++) {
+      const rear = laneCars[i - 1];
+      const front = laneCars[i];
+      const minCenterGap = (rear.w + front.w) / 2 + (rear.bus || front.bus ? 76 : 44);
+      const centerGap = trafficProgress(front) - trafficProgress(rear);
+      if (centerGap >= minCenterGap) continue;
+
+      const pushBack = minCenterGap - centerGap;
+      moveAlongTraffic(rear, -pushBack);
+      rear.aiSpeed = Math.min(rear.aiSpeed, Math.max(0, front.aiSpeed - 8));
+      rear.stuckTimer = 0;
+      corrections += 1;
+    }
+  }
+  state.trafficGapCorrections = (state.trafficGapCorrections || 0) + corrections;
+}
+
+function trafficProgress(car) {
+  return (car.dir === "h" ? car.x : car.y) * car.sign;
+}
+
+function moveAlongTraffic(car, amount) {
+  if (car.dir === "h") car.x += amount * car.sign;
+  else car.y += amount * car.sign;
 }
 
 function vehicleRadius(vehicle) {
@@ -1027,9 +1109,12 @@ function updateDebugTelemetry() {
   document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
   document.body.dataset.trafficPasses = String(state.trafficPasses || 0);
   document.body.dataset.trafficRecoveries = String(state.trafficRecoveries || 0);
+  document.body.dataset.trafficGapCorrections = String(state.trafficGapCorrections || 0);
   const redLightStops = vehicles.filter((vehicle) => trafficSignalBlocker(vehicle)).length;
+  const intersectionWaits = vehicles.filter((vehicle) => intersectionBoxBlocker(vehicle)).length;
   document.body.dataset.redLightStops = String(redLightStops);
-  document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8 && !trafficSignalBlocker(vehicle)).length);
+  document.body.dataset.intersectionWaits = String(intersectionWaits);
+  document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8 && !trafficSignalBlocker(vehicle) && !intersectionBoxBlocker(vehicle)).length);
   document.body.dataset.queuedTraffic = String(redLightStops);
   document.body.dataset.pedsInStreet = String(peds.filter((ped) => isStreetInterior(ped.x, ped.y)).length);
   document.body.dataset.jaywalkers = String(peds.filter((ped) => ped.jaywalker).length);
