@@ -1,5 +1,6 @@
 import { applyLifeLoss, isLaneChangeSafe, nextTrafficSpeed, shouldAttemptLaneChange } from "./trafficModel.js";
 
+const urlParams = new URLSearchParams(window.location.search);
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
 const mini = document.querySelector("#map");
@@ -14,6 +15,7 @@ const ui = {
   lives: document.querySelector("#lives"),
   missionTitle: document.querySelector("#missionTitle"),
   missionText: document.querySelector("#missionText"),
+  testPanel: document.querySelector("#testPanel"),
   start: document.querySelector("#start"),
   toast: document.querySelector("#toast"),
 };
@@ -43,6 +45,14 @@ const state = {
   currentMission: 0,
   lives: 5,
   gameOver: false,
+  testMode: urlParams.get("testMode") === "1",
+  testScenario: urlParams.get("scenario") || "observe",
+  inputX: 0,
+  inputY: 0,
+  playerSpeed: 0,
+  playerDriveSpeed: 0,
+  policeContacts: 0,
+  policeBoosts: 0,
   camera: { x: 0, y: 0 },
 };
 
@@ -145,6 +155,10 @@ function update(dt) {
     updateHud();
     return;
   }
+  if (state.testMode && state.testScenario === "police") {
+    state.heat = Math.max(state.heat, 4.5);
+    state.wantedTimer = Math.max(state.wantedTimer, 20);
+  }
   player.invuln = Math.max(0, player.invuln - dt);
   updatePlayer(dt);
   updateTraffic(dt);
@@ -160,10 +174,13 @@ function update(dt) {
 }
 
 function updatePlayer(dt) {
+  const prevX = player.x;
+  const prevY = player.y;
   if (player.inCar) {
     const car = player.inCar;
     const steer = key("a", "arrowleft") ? -1 : key("d", "arrowright") ? 1 : 0;
-    const gas = key("w", "arrowup") ? 1 : key("s", "arrowdown") ? -0.65 : 0;
+    const testCruise = state.testMode && state.testScenario === "drive" && !key("w", "arrowup", "s", "arrowdown");
+    const gas = key("w", "arrowup") ? 1 : key("s", "arrowdown") ? -0.65 : testCruise ? 0.55 : 0;
     const boost = key("shift") ? 1.35 : 1;
     car.speed += gas * car.accel * boost * dt;
     car.speed *= key(" ") ? 0.9 : 0.985;
@@ -181,12 +198,18 @@ function updatePlayer(dt) {
     player.x = car.x;
     player.y = car.y;
     player.angle = car.angle;
+    state.inputX = steer;
+    state.inputY = gas;
+    state.playerDriveSpeed = Math.abs(car.speed);
+    state.playerSpeed = dist({ x: prevX, y: prevY }, player) / Math.max(dt, 0.001);
     policeNoise(Math.abs(car.speed) > car.max * 1.18 ? 0.07 * dt : 0);
     return;
   }
 
   const dx = (key("d", "arrowright") ? 1 : 0) - (key("a", "arrowleft") ? 1 : 0);
   const dy = (key("s", "arrowdown") ? 1 : 0) - (key("w", "arrowup") ? 1 : 0);
+  state.inputX = dx;
+  state.inputY = dy;
   const mag = Math.hypot(dx, dy) || 1;
   const speed = key("shift") ? 230 : 148;
   const nx = player.x + (dx / mag) * speed * dt;
@@ -194,6 +217,8 @@ function updatePlayer(dt) {
   if (!hitsBuilding(nx, player.y, player.r)) player.x = nx;
   if (!hitsBuilding(player.x, ny, player.r)) player.y = ny;
   if (dx || dy) player.angle = Math.atan2(dy, dx);
+  state.playerSpeed = dist({ x: prevX, y: prevY }, player) / Math.max(dt, 0.001);
+  state.playerDriveSpeed = 0;
 }
 
 function updateTraffic(dt) {
@@ -588,12 +613,24 @@ function vehicleRadius(vehicle) {
 
 function updatePeds(dt) {
   for (const ped of peds) {
+    const playerDistance = dist(ped, player);
+    const dangerRange = player.inCar ? 140 : 42;
+    const danger = playerDistance < dangerRange;
+    if (danger && player.inCar) {
+      ped.panicTimer = Math.max(ped.panicTimer || 0, 1.6);
+      ped.program = "panic";
+    }
+    ped.panicTimer = Math.max(0, (ped.panicTimer || 0) - dt);
+    if (ped.panicTimer <= 0 && ped.program === "panic") {
+      ped.program = "sidewalk";
+      ped.wait = 0;
+    }
+
     ped.wait -= dt;
     if (ped.wait <= 0) {
       choosePedDirection(ped);
-      ped.wait = randRange(0.9, 2.8);
     }
-    const speed = ped.scared ? 110 : 38;
+    const speed = pedSpeed(ped);
     const nx = ped.x + Math.cos(ped.angle) * speed * dt;
     const ny = ped.y + Math.sin(ped.angle) * speed * dt;
     if (canPedMoveTo(ped, nx, ny)) {
@@ -602,12 +639,13 @@ function updatePeds(dt) {
       ped.crossing = isStreetInterior(ped.x, ped.y);
     } else {
       ped.crossing = false;
+      ped.program = "sidewalk";
       ped.angle = sidewalkHeading(ped) + randRange(-0.35, 0.35);
       ped.wait = randRange(0.35, 1.1);
     }
     if (dist(ped, player) > STREAM_RADIUS * 0.82) resetPed(ped);
-    ped.scared = dist(ped, player) < (player.inCar ? 120 : 58);
-    if (ped.scared && player.inCar && dist(ped, player) < 24) {
+    ped.scared = ped.program === "panic" || danger;
+    if (ped.scared && player.inCar && playerDistance < 24) {
       hurt(3);
       policeNoise(0.65);
       ped.x += Math.cos(player.angle) * 46;
@@ -618,32 +656,47 @@ function updatePeds(dt) {
 }
 
 function choosePedDirection(ped) {
-  if (ped.scared) {
-    ped.angle += randRange(-1.4, 1.4);
+  if (ped.program === "panic" || ped.panicTimer > 0) {
+    ped.program = "panic";
+    ped.angle = Math.atan2(ped.y - player.y, ped.x - player.x) + randRange(-0.28, 0.28);
+    ped.wait = randRange(0.18, 0.42);
     return;
   }
 
   const crossHeading = crossingHeading(ped);
   if (nearCrosswalk(ped) && (ped.jaywalker || (rand() < 0.28 && pedestrianSignalAllows(ped, crossHeading)))) {
+    ped.program = ped.jaywalker ? "jaywalk" : "crossing";
     ped.angle = crossHeading;
     ped.crossing = true;
+    ped.wait = randRange(0.8, 1.5);
     return;
   }
 
   if (ped.jaywalker && rand() < 0.18) {
+    ped.program = "jaywalk";
     ped.angle = crossHeading + randRange(-0.18, 0.18);
     ped.crossing = true;
+    ped.wait = randRange(0.8, 1.5);
     return;
   }
 
+  ped.program = "sidewalk";
+  if (rand() < 0.08) ped.walkSign *= -1;
   ped.angle = sidewalkHeading(ped) + randRange(-0.3, 0.3);
+  ped.wait = randRange(1.1, 3.4);
 }
 
 function canPedMoveTo(ped, x, y) {
   if (hitsBuilding(x, y, 9) || !isPedWalkable(x, y)) return false;
-  if (ped.scared || ped.jaywalker || ped.crossing) return true;
+  if (ped.program === "panic" || ped.jaywalker || ped.crossing) return true;
   if (!isStreetInterior(x, y)) return true;
   return ped.crossing && nearCrosswalk({ x, y }) && pedestrianSignalAllows({ ...ped, x, y });
+}
+
+function pedSpeed(ped) {
+  if (ped.program === "panic") return 132;
+  if (ped.program === "crossing" || ped.program === "jaywalk") return 48;
+  return 34;
 }
 
 function pedestrianSignalAllows(ped, heading = ped.angle) {
@@ -676,10 +729,17 @@ function updatePolice(dt) {
 
   for (const cop of cops) {
     cop.unstuckTimer = Math.max(0, (cop.unstuckTimer || 0) - dt);
-    const pursuit = state.heat >= 1 && dist(cop, player) < 850;
-    const targetAngle = pursuit && !cop.unstuckTimer ? Math.atan2(player.y - cop.y, player.x - cop.x) : cop.angle;
-    cop.angle = lerpAngle(cop.angle, targetAngle, pursuit ? 3.2 * dt : 0.8 * dt);
-    cop.speed = lerp(cop.speed, pursuit ? 210 + state.heat * 25 : 86, 1.8 * dt);
+    cop.contactCooldown = Math.max(0, (cop.contactCooldown || 0) - dt);
+    cop.boostCooldown = Math.max(0, (cop.boostCooldown || 0) - dt);
+    const distanceToPlayer = dist(cop, player);
+    const pursuit = state.heat >= 1 && distanceToPlayer < 1450;
+    const leadTime = player.inCar ? clamp(distanceToPlayer / 620, 0.18, 0.85) : 0.12;
+    const targetX = player.x + Math.cos(player.angle) * (player.inCar ? player.inCar.speed * leadTime : state.playerSpeed * leadTime);
+    const targetY = player.y + Math.sin(player.angle) * (player.inCar ? player.inCar.speed * leadTime : state.playerSpeed * leadTime);
+    const targetAngle = pursuit && !cop.unstuckTimer ? Math.atan2(targetY - cop.y, targetX - cop.x) : cop.angle;
+    cop.angle = lerpAngle(cop.angle, targetAngle, pursuit ? (4.2 + state.heat * 0.28) * dt : 0.8 * dt);
+    const chaseSpeed = 250 + state.heat * 44 + (player.inCar ? Math.min(120, Math.abs(player.inCar.speed) * 0.28) : 0);
+    cop.speed = lerp(cop.speed, pursuit ? chaseSpeed : 96, (pursuit ? 2.7 : 1.4) * dt);
     const prevX = cop.x;
     const prevY = cop.y;
     cop.x += Math.cos(cop.angle) * cop.speed * dt;
@@ -688,16 +748,24 @@ function updatePolice(dt) {
       cop.x = prevX;
       cop.y = prevY;
       cop.angle = escapeHeading(cop);
-      cop.speed = 48;
-      cop.unstuckTimer = 0.65;
+      cop.speed = pursuit ? 120 : 48;
+      cop.unstuckTimer = 0.38;
+      if (pursuit && cop.boostCooldown <= 0) {
+        cop.boostCooldown = 0.45;
+        state.policeBoosts = (state.policeBoosts || 0) + 1;
+      }
     }
-    if (dist(cop, player) > STREAM_RADIUS * 1.2) resetCop(cop);
-    if (pursuit && dist(cop, player) < (player.inCar ? 42 : 28)) {
-      hurt(player.inCar ? 10 : 18);
+    if (distanceToPlayer > STREAM_RADIUS * 1.2) resetCop(cop);
+    if (pursuit && cop.contactCooldown <= 0 && distanceToPlayer < (player.inCar ? 52 : 30)) {
+      cop.contactCooldown = 0.8;
+      hurt(player.inCar ? 14 : 24);
       state.heat = Math.max(state.heat, 2.2);
-      state.wantedTimer = 8;
-      spark(player.x, player.y, 10, "#4cc9f0");
+      state.wantedTimer = 12;
+      state.policeContacts = (state.policeContacts || 0) + 1;
+      if (player.inCar) player.inCar.speed *= 0.58;
+      spark(player.x, player.y, 18, "#4cc9f0");
     }
+    if (pursuit && state.heat >= 3.5 && rand() < 0.022) spark(cop.x, cop.y, 3, "#ef476f");
   }
 }
 
@@ -796,9 +864,33 @@ function draw() {
   for (const cop of cops) drawCar(cop);
   if (!player.inCar) drawPlayer();
   for (const p of particles) drawParticle(p);
+  if (state.testMode) drawSimulationOverlay();
   ctx.restore();
   drawVignette();
   drawMiniMap();
+}
+
+function drawSimulationOverlay() {
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(76,201,240,.34)";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.inCar ? 140 : 42, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(239,71,111,.18)";
+  for (const cop of cops) {
+    ctx.beginPath();
+    ctx.arc(cop.x, cop.y, 1450, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  for (const ped of peds) {
+    if (dist(ped, player) > 520) continue;
+    ctx.fillStyle = ped.program === "panic" ? "#ef476f" : ped.program === "crossing" ? "#4cc9f0" : ped.program === "jaywalk" ? "#f2c94c" : "rgba(247,244,232,.7)";
+    ctx.fillRect(ped.x - 3, ped.y - 15, 6, 3);
+  }
+  ctx.restore();
 }
 
 function drawWorld() {
@@ -1083,12 +1175,46 @@ function updateHud() {
   if (state.gameOver) {
     ui.missionTitle.textContent = "Game Over";
     ui.missionText.textContent = "You used all 5 lives. Restart from Wolfe House.";
+    updateTestPanel();
     return;
   }
   ui.missionTitle.textContent = activeJob.started
     ? `${activeJob.title} - ${Math.max(0, Math.ceil(activeJob.timer))}s`
     : activeJob.title;
   ui.missionText.textContent = missionText();
+  updateTestPanel();
+}
+
+function updateTestPanel() {
+  if (!ui.testPanel) return;
+  ui.testPanel.classList.toggle("hidden", !state.testMode);
+  if (!state.testMode) return;
+  const pedPrograms = countPedPrograms();
+  const nearestCop = cops.reduce((closest, cop) => Math.min(closest, dist(cop, player)), Infinity);
+  ui.testPanel.innerHTML = `
+    <strong>Simulation Lab: ${state.testScenario}</strong>
+    <dl>
+      <dt>mode</dt><dd>${player.inCar ? "driving" : "on-foot"}</dd>
+      <dt>input</dt><dd>${state.inputX.toFixed(0)}, ${state.inputY.toFixed(0)}</dd>
+      <dt>walk speed</dt><dd>${state.playerSpeed.toFixed(1)}</dd>
+      <dt>drive speed</dt><dd>${state.playerDriveSpeed.toFixed(1)}</dd>
+      <dt>heat</dt><dd>${state.heat.toFixed(1)}</dd>
+      <dt>nearest police</dt><dd>${Number.isFinite(nearestCop) ? nearestCop.toFixed(0) : "-"}</dd>
+      <dt>police hits</dt><dd>${state.policeContacts || 0}</dd>
+      <dt>peds sidewalk</dt><dd>${pedPrograms.sidewalk || 0}</dd>
+      <dt>peds crossing</dt><dd>${(pedPrograms.crossing || 0) + (pedPrograms.jaywalk || 0)}</dd>
+      <dt>peds panic</dt><dd>${pedPrograms.panic || 0}</dd>
+      <dt>traffic stuck</dt><dd>${document.body.dataset.stoppedTraffic || "0"}</dd>
+      <dt>overlaps</dt><dd>${document.body.dataset.vehicleOverlaps || "0"}</dd>
+    </dl>
+  `;
+}
+
+function countPedPrograms() {
+  return peds.reduce((counts, ped) => {
+    counts[ped.program] = (counts[ped.program] || 0) + 1;
+    return counts;
+  }, {});
 }
 
 function updateDebugTelemetry() {
@@ -1100,7 +1226,11 @@ function updateDebugTelemetry() {
   document.body.dataset.homeName = HOME.name;
   document.body.dataset.running = String(state.running);
   document.body.dataset.gameOver = String(state.gameOver);
+  document.body.dataset.testMode = String(state.testMode);
+  document.body.dataset.testScenario = state.testScenario;
   document.body.dataset.lives = String(state.lives);
+  document.body.dataset.playerSpeed = state.playerSpeed.toFixed(2);
+  document.body.dataset.playerDriveSpeed = state.playerDriveSpeed.toFixed(2);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
   document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
@@ -1118,6 +1248,10 @@ function updateDebugTelemetry() {
   document.body.dataset.queuedTraffic = String(redLightStops);
   document.body.dataset.pedsInStreet = String(peds.filter((ped) => isStreetInterior(ped.x, ped.y)).length);
   document.body.dataset.jaywalkers = String(peds.filter((ped) => ped.jaywalker).length);
+  document.body.dataset.pedsPanic = String(peds.filter((ped) => ped.program === "panic").length);
+  document.body.dataset.pedsCrossing = String(peds.filter((ped) => ped.program === "crossing" || ped.program === "jaywalk").length);
+  document.body.dataset.policeContacts = String(state.policeContacts || 0);
+  document.body.dataset.policeBoosts = String(state.policeBoosts || 0);
   document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
 }
 
@@ -1158,32 +1292,77 @@ function maxPoliceSpin() {
 }
 
 function queueSelfTest() {
-  const params = new URLSearchParams(window.location.search);
-  const heat = Number(params.get("testHeat") || 0);
+  const heat = Number(urlParams.get("testHeat") || 0);
   if (heat > 0) {
     state.heat = heat;
     state.wantedTimer = 12;
   }
-  if (params.get("testHospital") === "1") {
+  if (urlParams.get("testHospital") === "1") {
     window.setTimeout(() => {
       startGame();
       sendHomeFromHospital();
     }, 160);
   }
-  if (params.get("testLives") === "0") {
+  if (urlParams.get("testLives") === "0") {
     window.setTimeout(() => {
       startGame();
       for (let i = 0; i < 5; i++) sendHomeFromHospital();
     }, 160);
   }
-  const direction = params.get("testMove");
+  if (state.testMode) {
+    window.setTimeout(() => activateTestScenario(), 180);
+  }
+  const direction = urlParams.get("testMove");
   if (!direction) return;
-  const duration = clamp(Number(params.get("testMs") || 700), 100, 8000);
+  const duration = clamp(Number(urlParams.get("testMs") || 700), 100, 8000);
   window.setTimeout(() => {
     startGame();
     keys.add(direction.toLowerCase());
     window.setTimeout(() => keys.delete(direction.toLowerCase()), duration);
   }, 120);
+}
+
+function activateTestScenario() {
+  startGame();
+  if (state.testScenario === "drive") {
+    const car = vehicles.filter((vehicle) => !vehicle.bus).sort((a, b) => dist(a, HOME) - dist(b, HOME))[0];
+    if (car) {
+      car.x = HOME.x + 120;
+      car.y = trafficLanePosition("h", snapDown(HOME.y, BLOCK), 1, 0);
+      car.dir = "h";
+      car.sign = 1;
+      car.laneIndex = 0;
+      car.lane = car.y;
+      car.targetLane = car.y;
+      car.angle = 0;
+      car.speed = 80;
+      player.inCar = car;
+      player.x = car.x;
+      player.y = car.y;
+      player.angle = car.angle;
+      toast("Simulation Lab: driving scenario");
+    }
+  } else if (state.testScenario === "police") {
+    state.heat = 5;
+    state.wantedTimer = 999;
+    placePoliceRing(360);
+    toast("Simulation Lab: extreme police scenario");
+  } else {
+    toast(`Simulation Lab: ${state.testScenario}`);
+  }
+}
+
+function placePoliceRing(radius) {
+  cops.forEach((cop, index) => {
+    const angle = (Math.PI * 2 * index) / cops.length;
+    cop.x = player.x + Math.cos(angle) * radius;
+    cop.y = player.y + Math.sin(angle) * radius;
+    cop.angle = angle + Math.PI;
+    cop.speed = 140;
+    cop.unstuckTimer = 0;
+    cop.contactCooldown = 0.35;
+    cop.boostCooldown = 0;
+  });
 }
 
 function spawnTraffic() {
@@ -1218,6 +1397,8 @@ function spawnPeds() {
       wait: randRange(0, 2),
       jaywalker: rand() < 0.12,
       crossing: false,
+      program: "sidewalk",
+      panicTimer: 0,
       walkAxis: rand() > 0.5 ? "h" : "v",
       walkSign: rand() > 0.5 ? 1 : -1,
       color: colors[Math.floor(rand() * colors.length)],
@@ -1233,8 +1414,10 @@ function spawnCops() {
     { x: 2080, y: 400 },
     { x: 3340, y: 1260 },
     { x: 1220, y: 3340 },
+    { x: -420, y: 820 },
+    { x: 420, y: -520 },
   ];
-  for (const p of starts) cops.push({ ...p, w: 58, h: 30, angle: randRange(0, 6), speed: 80, police: true, unstuckTimer: 0 });
+  for (const p of starts) cops.push({ ...p, w: 58, h: 30, angle: randRange(0, 6), speed: 80, police: true, unstuckTimer: 0, contactCooldown: 0, boostCooldown: 0 });
 }
 
 function resetTrafficCar(car, index = 0) {
@@ -1282,6 +1465,8 @@ function resetPed(ped) {
   ped.angle = sidewalkHeading(ped) + randRange(-0.25, 0.25);
   ped.wait = randRange(0.2, 2);
   ped.crossing = false;
+  ped.program = "sidewalk";
+  ped.panicTimer = 0;
 }
 
 function resetCop(cop) {
@@ -1292,6 +1477,8 @@ function resetCop(cop) {
   cop.angle = angle + Math.PI;
   cop.speed = 80;
   cop.unstuckTimer = 0.3;
+  cop.contactCooldown = 0;
+  cop.boostCooldown = 0;
   if (hitsBuilding(cop.x, cop.y, 26)) {
     cop.x = snapDown(cop.x, BLOCK);
     cop.y = snapDown(cop.y, BLOCK);

@@ -22,6 +22,16 @@ No package install is required. The game is plain HTML, CSS, and JavaScript.
 npm test
 ```
 
+## Simulation Lab
+
+Add `?testMode=1` to the URL to show live behavior telemetry and debug overlays.
+
+Useful scenarios:
+
+- `?testMode=1&scenario=foot`
+- `?testMode=1&scenario=drive`
+- `?testMode=1&scenario=police`
+
 ## Controls
 
 - `WASD` or arrow keys: move / drive
