@@ -31,6 +31,7 @@ Useful scenarios:
 - `?testMode=1&scenario=foot`
 - `?testMode=1&scenario=drive`
 - `?testMode=1&scenario=police`
+- `?testMode=1&testWrongSide=1`
 
 ## Controls
 

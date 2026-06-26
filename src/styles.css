@@ -41,7 +41,7 @@ body {
   top: 16px;
   left: 16px;
   display: grid;
-  grid-template-columns: 190px repeat(4, 82px) 130px;
+  grid-template-columns: 190px repeat(2, 82px) 42px repeat(2, 82px) 130px;
   align-items: center;
   gap: 8px;
   pointer-events: none;
@@ -98,6 +98,34 @@ body {
   min-height: 58px;
   padding: 10px 12px;
   border-radius: 8px;
+}
+
+#policeActivity {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 58px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(16, 20, 20, 0.76);
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 900;
+  box-shadow: 0 14px 45px rgba(0, 0, 0, 0.24);
+  transition: color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+#policeActivity.police-dispatch {
+  background: rgba(242, 201, 76, 0.18);
+  color: #f2c94c;
+  box-shadow: 0 0 24px rgba(242, 201, 76, 0.28);
+}
+
+#policeActivity.police-pursuit {
+  background: rgba(239, 71, 111, 0.22);
+  color: #ef476f;
+  box-shadow: 0 0 30px rgba(239, 71, 111, 0.42);
+  transform: scale(1.04);
 }
 
 .bar {
