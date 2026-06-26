@@ -2,9 +2,11 @@
   "name": "wolfe-gta",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "A local top-down open-city action driving game.",
   "scripts": {
     "start": "python3 -m http.server 5173",
-    "serve": "python3 -m http.server 5173"
+    "serve": "python3 -m http.server 5173",
+    "test": "node --test"
   }
 }

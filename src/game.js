@@ -1,3 +1,5 @@
+import { applyLifeLoss, isLaneChangeSafe, nextTrafficSpeed, shouldAttemptLaneChange } from "./trafficModel.js";
+
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
 const mini = document.querySelector("#map");
@@ -9,6 +11,7 @@ const ui = {
   heat: document.querySelector("#heat"),
   rep: document.querySelector("#rep"),
   health: document.querySelector("#healthBar"),
+  lives: document.querySelector("#lives"),
   missionTitle: document.querySelector("#missionTitle"),
   missionText: document.querySelector("#missionText"),
   start: document.querySelector("#start"),
@@ -38,6 +41,8 @@ const state = {
   wantedTimer: 0,
   messageTimer: 0,
   currentMission: 0,
+  lives: 5,
+  gameOver: false,
   camera: { x: 0, y: 0 },
 };
 
@@ -115,6 +120,7 @@ canvas.addEventListener("pointerdown", () => canvas.focus());
 ui.start.addEventListener("click", startGame);
 
 function startGame() {
+  if (state.gameOver) resetGame();
   if (state.running) return;
   state.running = true;
   ui.start.classList.add("hidden");
@@ -134,6 +140,11 @@ function tick(now) {
 }
 
 function update(dt) {
+  if (state.gameOver) {
+    updateDebugTelemetry();
+    updateHud();
+    return;
+  }
   player.invuln = Math.max(0, player.invuln - dt);
   updatePlayer(dt);
   updateTraffic(dt);
@@ -190,14 +201,14 @@ function updateTraffic(dt) {
     car.pathT += dt * car.aiSpeed;
     car.mergeCooldown = Math.max(0, (car.mergeCooldown || 0) - dt);
     const blocker = nearestTrafficBlocker(car);
-    let desiredSpeed = car.targetSpeed;
-    if (blocker) {
-      if (!blocker.signal && shouldPass(car, blocker)) startLaneChange(car);
-      const stopDistance = blocker.minGap + (blocker.signal ? 8 : car.bus || blocker.bus ? 18 : 10);
-      const slowZone = blocker.minGap + (blocker.signal ? 116 : car.bus || blocker.bus ? 74 : 46);
-      desiredSpeed = blocker.gap < stopDistance ? 0 : car.targetSpeed * clamp((blocker.gap - stopDistance) / (slowZone - stopDistance), 0.18, 0.96);
-    }
-    car.aiSpeed = lerp(car.aiSpeed, desiredSpeed, (desiredSpeed < car.aiSpeed ? 4.8 : 0.75) * dt);
+    if (shouldPass(car, blocker)) startLaneChange(car);
+    car.aiSpeed = nextTrafficSpeed({
+      speed: car.aiSpeed,
+      targetSpeed: car.targetSpeed,
+      blocker,
+      dt,
+      options: car.bus ? { minGap: 26, timeHeadway: 1.55, maxAccel: 58, comfortableBrake: 125 } : undefined,
+    });
     recoverStuckTraffic(car, blocker, dt);
 
     maybeTurnAtIntersection(car);
@@ -230,12 +241,13 @@ function updateTraffic(dt) {
 }
 
 function shouldPass(car, blocker) {
-  if (car.bus || car.mergeCooldown > 0 || blocker.gap < blocker.minGap + 10) return false;
-  if ((car.targetLane ?? car.lane) !== car.lane) return false;
-  if (car.targetSpeed < (blocker.aiSpeed || 0) + 18) return false;
-  if (nearIntersection(car)) return false;
   const nextLaneIndex = car.laneIndex === 0 ? 1 : 0;
-  return isLaneClear(car, nextLaneIndex);
+  return shouldAttemptLaneChange({
+    car,
+    blocker,
+    nearIntersection: nearIntersection(car),
+    targetLaneClear: isLaneClear(car, nextLaneIndex),
+  });
 }
 
 function startLaneChange(car) {
@@ -249,14 +261,27 @@ function startLaneChange(car) {
 function isLaneClear(car, laneIndex) {
   const roadCenter = Math.round(car.lane / BLOCK) * BLOCK;
   const lane = trafficLanePosition(car.dir, roadCenter, car.sign, laneIndex);
+  let frontGap = Infinity;
+  let rearGap = Infinity;
+  let rearSpeed = 0;
   for (const other of vehicles) {
     if (other === car || other.dir !== car.dir || other.sign !== car.sign) continue;
     if (Math.abs((other.targetLane ?? other.lane) - lane) > LANE_WIDTH * 0.55) continue;
     const delta = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
-    const minGap = (car.w + other.w) / 2;
-    if (delta > -minGap - 34 && delta < minGap + 96) return false;
+    const edgeGap = Math.abs(delta) - (car.w + other.w) / 2;
+    if (delta >= 0) frontGap = Math.min(frontGap, edgeGap);
+    else if (edgeGap < rearGap) {
+      rearGap = edgeGap;
+      rearSpeed = other.aiSpeed || 0;
+    }
   }
-  return true;
+  return isLaneChangeSafe({
+    frontGap,
+    rearGap,
+    rearSpeed,
+    carSpeed: car.aiSpeed,
+    carLength: car.w,
+  });
 }
 
 function recoverStuckTraffic(car, blocker, dt) {
@@ -967,11 +992,17 @@ function drawMiniMap() {
 }
 
 function updateHud() {
-  ui.mode.textContent = player.inCar ? `Driving ${Math.round(Math.abs(player.inCar.speed))} mph` : "On foot";
+  ui.mode.textContent = state.gameOver ? "Game over" : player.inCar ? `Driving ${Math.round(Math.abs(player.inCar.speed))} mph` : "On foot";
   ui.cash.textContent = `$${state.cash}`;
   ui.heat.textContent = Math.floor(state.heat).toString();
   ui.rep.textContent = state.rep.toString();
+  ui.lives.textContent = state.lives.toString();
   ui.health.style.width = `${clamp(player.health, 0, 100)}%`;
+  if (state.gameOver) {
+    ui.missionTitle.textContent = "Game Over";
+    ui.missionText.textContent = "You used all 5 lives. Restart from Wolfe House.";
+    return;
+  }
   ui.missionTitle.textContent = activeJob.started
     ? `${activeJob.title} - ${Math.max(0, Math.ceil(activeJob.timer))}s`
     : activeJob.title;
@@ -986,6 +1017,8 @@ function updateDebugTelemetry() {
   document.body.dataset.playerAtHome = String(dist(player, HOME) < 8);
   document.body.dataset.homeName = HOME.name;
   document.body.dataset.running = String(state.running);
+  document.body.dataset.gameOver = String(state.gameOver);
+  document.body.dataset.lives = String(state.lives);
   document.body.dataset.vehicleOverlaps = String(countVehicleOverlaps());
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
   document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
@@ -994,8 +1027,10 @@ function updateDebugTelemetry() {
   document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
   document.body.dataset.trafficPasses = String(state.trafficPasses || 0);
   document.body.dataset.trafficRecoveries = String(state.trafficRecoveries || 0);
-  document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8).length);
-  document.body.dataset.redLightStops = String(vehicles.filter((vehicle) => trafficSignalBlocker(vehicle)).length);
+  const redLightStops = vehicles.filter((vehicle) => trafficSignalBlocker(vehicle)).length;
+  document.body.dataset.redLightStops = String(redLightStops);
+  document.body.dataset.stoppedTraffic = String(vehicles.filter((vehicle) => vehicle.aiSpeed < 8 && !trafficSignalBlocker(vehicle)).length);
+  document.body.dataset.queuedTraffic = String(redLightStops);
   document.body.dataset.pedsInStreet = String(peds.filter((ped) => isStreetInterior(ped.x, ped.y)).length);
   document.body.dataset.jaywalkers = String(peds.filter((ped) => ped.jaywalker).length);
   document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
@@ -1048,6 +1083,12 @@ function queueSelfTest() {
     window.setTimeout(() => {
       startGame();
       sendHomeFromHospital();
+    }, 160);
+  }
+  if (params.get("testLives") === "0") {
+    window.setTimeout(() => {
+      startGame();
+      for (let i = 0; i < 5; i++) sendHomeFromHospital();
     }, 160);
   }
   const direction = params.get("testMove");
@@ -1300,7 +1341,7 @@ function policeNoise(amount) {
 }
 
 function hurt(amount) {
-  if (player.invuln > 0) return;
+  if (state.gameOver || player.invuln > 0) return;
   player.health -= amount;
   player.invuln = 0.5;
   if (player.health <= 0) {
@@ -1310,13 +1351,48 @@ function hurt(amount) {
 }
 
 function sendHomeFromHospital() {
+  const lifeState = applyLifeLoss(state.lives);
+  state.lives = lifeState.lives;
+  if (lifeState.gameOver) {
+    triggerGameOver();
+    return;
+  }
   player.health = 100;
   player.x = HOME.x;
   player.y = HOME.y;
   player.inCar = null;
   state.heat = 0;
   state.wantedTimer = 0;
-  toast(`Discharged from hospital. Back home at ${HOME.name}.`);
+  toast(`Discharged from hospital. ${state.lives} lives left.`);
+}
+
+function triggerGameOver() {
+  state.gameOver = true;
+  state.running = false;
+  state.heat = 0;
+  state.wantedTimer = 0;
+  player.health = 0;
+  player.inCar = null;
+  ui.start.textContent = "Restart Game";
+  ui.start.classList.remove("hidden");
+  toast("Game over. Wolfe City took all 5 lives.");
+}
+
+function resetGame() {
+  state.gameOver = false;
+  state.lives = 5;
+  state.heat = 0;
+  state.wantedTimer = 0;
+  state.cash = Number(localStorage.getItem("wolfe.cash") || 0);
+  state.rep = Number(localStorage.getItem("wolfe.rep") || 0);
+  state.currentMission = 0;
+  activeJob = makeJob(0);
+  player.health = 100;
+  player.invuln = 0;
+  player.inCar = null;
+  player.x = HOME.x;
+  player.y = HOME.y;
+  ui.start.textContent = "Start Game";
 }
 
 function spark(x, y, count, color) {

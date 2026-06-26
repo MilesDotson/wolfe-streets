@@ -41,7 +41,7 @@ body {
   top: 16px;
   left: 16px;
   display: grid;
-  grid-template-columns: 190px repeat(3, 82px) 130px;
+  grid-template-columns: 190px repeat(4, 82px) 130px;
   align-items: center;
   gap: 8px;
   pointer-events: none;
