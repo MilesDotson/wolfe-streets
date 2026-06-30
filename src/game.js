@@ -37,11 +37,18 @@ const HOME_SAFE_RADIUS = 82;
 const WATER_WIDTH = 550;
 const HOSPITAL_BILL = 120;
 const BUST_BASE_FINE = 250;
+const BUST_THRESHOLD = 3.4;
+const BUST_DECAY = 0.55;
+const WALK_SPEED = 112;
+const SPRINT_SPEED = 168;
+const SWIM_SPEED = 58;
+const FAST_SWIM_SPEED = 92;
 const keys = new Set();
 const touchInput = { active: false, x: 0, y: 0, boost: false, brake: false };
 const rand = mulberry32(8142026);
 const colors = ["#c84c3a", "#2d9cdb", "#f2c94c", "#8fd694", "#f7f4e8", "#9b5de5"];
 const busColors = ["#f2c94c", "#4cc9f0", "#8fd694", "#f7f4e8"];
+const motorcycleColors = ["#ef476f", "#f2c94c", "#4cc9f0", "#f7f4e8"];
 
 const state = {
   running: false,
@@ -253,7 +260,7 @@ function update(dt) {
     state.wantedTimer = Math.max(state.wantedTimer, 20);
   }
   state.lawCooldown = Math.max(0, state.lawCooldown - dt);
-  state.bustPressure = Math.max(0, state.bustPressure - dt * 0.35);
+  state.bustPressure = Math.max(0, state.bustPressure - dt * BUST_DECAY);
   player.invuln = Math.max(0, player.invuln - dt);
   updatePlayer(dt);
   updateHomeSafeZone(dt);
@@ -282,7 +289,8 @@ function updatePlayer(dt) {
     car.speed *= key(" ") ? 0.9 : 0.985;
     car.impactCooldown = Math.max(0, (car.impactCooldown || 0) - dt);
     car.speed = clamp(car.speed, -car.max * 0.45, car.max * boost);
-    car.angle += steer * (1.7 + Math.abs(car.speed) / 210) * Math.sign(car.speed || 1) * dt;
+    const steerGrip = car.motorcycle ? 1.45 : 1;
+    car.angle += steer * (1.7 + Math.abs(car.speed) / 210) * steerGrip * Math.sign(car.speed || 1) * dt;
     car.x += Math.cos(car.angle) * car.speed * dt;
     car.y += Math.sin(car.angle) * car.speed * dt;
     if (hitsBuilding(car.x, car.y, car.w * 0.42)) {
@@ -314,7 +322,7 @@ function updatePlayer(dt) {
   state.inputY = dy;
   const mag = Math.hypot(dx, dy) || 1;
   const swimming = isWater(player.x, player.y);
-  const speed = swimming ? (key("shift") ? 92 : 58) : key("shift") ? 230 : 148;
+  const speed = swimming ? (key("shift") ? FAST_SWIM_SPEED : SWIM_SPEED) : key("shift") ? SPRINT_SPEED : WALK_SPEED;
   const nx = player.x + (dx / mag) * speed * dt;
   const ny = player.y + (dy / mag) * speed * dt;
   if (!hitsBuilding(nx, player.y, player.r)) player.x = nx;
@@ -373,7 +381,7 @@ function updateTraffic(dt) {
       targetSpeed: car.targetSpeed,
       blocker,
       dt,
-      options: car.bus ? { minGap: 26, timeHeadway: 1.55, maxAccel: 58, comfortableBrake: 125 } : undefined,
+      options: trafficModelOptions(car),
     });
     recoverStuckTraffic(car, blocker, dt);
 
@@ -539,7 +547,11 @@ function maybeTurnAtIntersection(car) {
   car.lastNode = node;
 
   const roll = rand();
-  const turn = car.bus ? (roll < 0.82 ? "straight" : roll < 0.91 ? "right" : "left") : roll < 0.58 ? "straight" : roll < 0.8 ? "right" : "left";
+  const turn = car.bus
+    ? (roll < 0.82 ? "straight" : roll < 0.91 ? "right" : "left")
+    : car.motorcycle
+      ? (roll < 0.5 ? "straight" : roll < 0.78 ? "right" : "left")
+      : roll < 0.58 ? "straight" : roll < 0.8 ? "right" : "left";
   if (turn === "straight") return;
 
   const next = turnDirection(car.dir, car.sign, turn);
@@ -578,10 +590,23 @@ function trafficBlocker(car) {
     if (Math.abs(other.lane - car.lane) > LANE_WIDTH * 0.55) continue;
     const gap = car.dir === "h" ? (other.x - car.x) * car.sign : (other.y - car.y) * car.sign;
     const minGap = (car.w + other.w) / 2;
-    const followDistance = minGap + (car.bus || other.bus ? 150 : 96) + car.aiSpeed * 1.25;
+    const followDistance = minGap + followBuffer(car, other) + car.aiSpeed * (car.motorcycle ? 0.85 : 1.25);
     if (gap > 0 && gap < followDistance && (!closest || gap < closest.gap)) closest = { ...other, vehicle: other, gap, minGap };
   }
   return closest;
+}
+
+function trafficModelOptions(car) {
+  if (car.bus) return { minGap: 26, timeHeadway: 1.55, maxAccel: 58, comfortableBrake: 125 };
+  if (car.motorcycle) return { minGap: 12, timeHeadway: 0.82, maxAccel: 130, comfortableBrake: 190 };
+  return undefined;
+}
+
+function followBuffer(car, other) {
+  if (car.bus || other.bus) return 150;
+  if (car.motorcycle && other.motorcycle) return 42;
+  if (car.motorcycle || other.motorcycle) return 64;
+  return 96;
 }
 
 function isQueuedLeadVehicle(vehicle) {
@@ -644,7 +669,7 @@ function exitLaneClear(car, nodeX, nodeY) {
 }
 
 function exitLaneClearFor(dir, sign, laneIndex, nodeX, nodeY, ignore, bus = false) {
-  const exitDistance = bus ? 190 : 150;
+  const exitDistance = bus ? 190 : ignore?.motorcycle ? 96 : 150;
   const lane = trafficLanePosition(dir, dir === "h" ? nodeY : nodeX, sign, laneIndex);
   for (const other of roadVehicles()) {
     if (other === ignore || other === player.inCar || other.dir !== dir || other.sign !== sign) continue;
@@ -785,7 +810,7 @@ function resolveTrafficGaps() {
     for (let i = 1; i < laneCars.length; i++) {
       const rear = laneCars[i - 1];
       const front = laneCars[i];
-      const minCenterGap = (rear.w + front.w) / 2 + (rear.bus || front.bus ? 76 : 44);
+      const minCenterGap = (rear.w + front.w) / 2 + gapCorrectionBuffer(rear, front);
       const centerGap = trafficProgress(front) - trafficProgress(rear);
       if (centerGap >= minCenterGap) continue;
 
@@ -810,6 +835,13 @@ function moveAlongTraffic(car, amount) {
 
 function vehicleRadius(vehicle) {
   return Math.max(vehicle.w || 54, vehicle.h || 28) * 0.52;
+}
+
+function gapCorrectionBuffer(a, b) {
+  if (a.bus || b.bus) return 76;
+  if (a.motorcycle && b.motorcycle) return 24;
+  if (a.motorcycle || b.motorcycle) return 32;
+  return 44;
 }
 
 function updatePeds(dt) {
@@ -965,15 +997,15 @@ function updatePolice(dt) {
     }
     if (distanceToPlayer > STREAM_RADIUS * 1.2) resetCop(cop);
     if (pursuit && cop.contactCooldown <= 0 && distanceToPlayer < (player.inCar ? 52 : 30)) {
-      cop.contactCooldown = 0.8;
+      cop.contactCooldown = 1.1;
       state.heat = Math.max(state.heat, 2.2);
       state.wantedTimer = 12;
       state.policeContacts = (state.policeContacts || 0) + 1;
       const playerCarSpeed = player.inCar ? Math.abs(player.inCar.speed) : 0;
-      state.bustPressure += player.inCar ? (playerCarSpeed < 90 ? 1.15 : 0.45) : 2.2;
+      state.bustPressure += player.inCar ? (playerCarSpeed < 70 ? 0.7 : 0.25) : 0.9;
       if (player.inCar) player.inCar.speed *= 0.58;
       spark(player.x, player.y, 18, "#4cc9f0");
-      if (state.bustPressure >= 2) {
+      if (state.bustPressure >= BUST_THRESHOLD) {
         sendHomeFromBust();
         return;
       }
@@ -1371,6 +1403,11 @@ function drawCar(car) {
   ctx.translate(car.x, car.y);
   ctx.rotate(car.angle);
   ctx.fillStyle = car.police ? "#f7f4e8" : car.color;
+  if (car.motorcycle) {
+    drawMotorcycle(car);
+    ctx.restore();
+    return;
+  }
   roundRect(-car.w / 2, -car.h / 2, car.w, car.h, 6);
   ctx.fill();
   if (car.bus) {
@@ -1388,6 +1425,19 @@ function drawCar(car) {
     ctx.fillRect(car.w * 0.3, car.h * 0.17, 8, 7);
   }
   ctx.restore();
+}
+
+function drawMotorcycle(car) {
+  ctx.fillStyle = car.color;
+  roundRect(-car.w / 2, -car.h / 2, car.w, car.h, 5);
+  ctx.fill();
+  ctx.fillStyle = "rgba(10,14,16,.68)";
+  ctx.fillRect(-car.w * 0.08, -car.h * 0.44, car.w * 0.26, car.h * 0.88);
+  ctx.fillStyle = "rgba(247,244,232,.78)";
+  ctx.beginPath();
+  ctx.arc(car.w * 0.42, -car.h * 0.42, 4, 0, Math.PI * 2);
+  ctx.arc(car.w * 0.42, car.h * 0.42, 4, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawParticle(p) {
@@ -1564,6 +1614,7 @@ function updateDebugTelemetry() {
   document.body.dataset.cityChunk = `${Math.floor(player.x / BLOCK)},${Math.floor(player.y / BLOCK)}`;
   document.body.dataset.policeMaxSpin = maxPoliceSpin().toFixed(3);
   document.body.dataset.busCount = String(vehicles.filter((vehicle) => vehicle.bus).length);
+  document.body.dataset.motorcycleCount = String(vehicles.filter((vehicle) => vehicle.motorcycle).length);
   document.body.dataset.laneCount = String(LANE_OFFSETS.length * 2);
   document.body.dataset.trafficTurns = String(state.trafficTurns || 0);
   document.body.dataset.trafficPasses = String(state.trafficPasses || 0);
@@ -1726,18 +1777,20 @@ function placePoliceRing(radius) {
 function spawnTraffic() {
   for (let i = 0; i < 54; i++) {
     const bus = i % 8 === 0;
+    const motorcycle = !bus && i % 5 === 2;
     const car = {
       bus,
-      w: bus ? 96 : 54,
-      h: bus ? 32 : 28,
+      motorcycle,
+      w: bus ? 96 : motorcycle ? 36 : 54,
+      h: bus ? 32 : motorcycle ? 16 : 28,
       angle: 0,
       speed: 0,
-      max: bus ? randRange(190, 240) : randRange(280, 360),
-      accel: bus ? randRange(210, 280) : randRange(380, 460),
-      aiSpeed: bus ? randRange(54, 96) : randRange(70, 150),
-      targetSpeed: bus ? randRange(58, 102) : randRange(78, 150),
+      max: bus ? randRange(190, 240) : motorcycle ? randRange(330, 410) : randRange(280, 360),
+      accel: bus ? randRange(210, 280) : motorcycle ? randRange(520, 620) : randRange(380, 460),
+      aiSpeed: trafficCruiseSpeed({ bus, motorcycle }),
+      targetSpeed: trafficTargetSpeed({ bus, motorcycle }),
       sign: rand() > 0.5 ? 1 : -1,
-      color: bus ? busColors[Math.floor(rand() * busColors.length)] : colors[Math.floor(rand() * colors.length)],
+      color: bus ? busColors[Math.floor(rand() * busColors.length)] : motorcycle ? motorcycleColors[Math.floor(rand() * motorcycleColors.length)] : colors[Math.floor(rand() * colors.length)],
       pathT: randRange(0, 100),
       mergeCooldown: randRange(0, 1.5),
     };
@@ -1799,10 +1852,22 @@ function resetTrafficCar(car, index = 0) {
     car.angle = horizontal ? (car.sign > 0 ? 0 : Math.PI) : car.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
     tries += 1;
   } while (tries < 20 && isWater(car.x, car.y));
-  car.aiSpeed = car.bus ? randRange(54, 96) : randRange(70, 150);
-  car.targetSpeed = car.bus ? randRange(58, 102) : randRange(78, 150);
+  car.aiSpeed = trafficCruiseSpeed(car);
+  car.targetSpeed = trafficTargetSpeed(car);
   car.lastNode = "";
   car.mergeCooldown = randRange(0.4, 1.6);
+}
+
+function trafficCruiseSpeed(vehicle) {
+  if (vehicle.bus) return randRange(54, 96);
+  if (vehicle.motorcycle) return randRange(92, 176);
+  return randRange(70, 150);
+}
+
+function trafficTargetSpeed(vehicle) {
+  if (vehicle.bus) return randRange(58, 102);
+  if (vehicle.motorcycle) return randRange(104, 184);
+  return randRange(78, 150);
 }
 
 function trafficLanePosition(dir, roadCenter, sign, laneIndex) {
