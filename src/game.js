@@ -35,6 +35,8 @@ const MINIMAP_RANGE = 1500;
 const HOME = { x: 630, y: 630, name: "Wolfe House" };
 const HOME_SAFE_RADIUS = 82;
 const WATER_WIDTH = 550;
+const HOSPITAL_BILL = 120;
+const BUST_BASE_FINE = 250;
 const keys = new Set();
 const touchInput = { active: false, x: 0, y: 0, boost: false, brake: false };
 const rand = mulberry32(8142026);
@@ -60,6 +62,8 @@ const state = {
   playerDriveSpeed: 0,
   policeContacts: 0,
   policeBoosts: 0,
+  busts: 0,
+  bustPressure: 0,
   lawEvents: 0,
   lawCooldown: 0,
   wrongSideTimer: 0,
@@ -249,6 +253,7 @@ function update(dt) {
     state.wantedTimer = Math.max(state.wantedTimer, 20);
   }
   state.lawCooldown = Math.max(0, state.lawCooldown - dt);
+  state.bustPressure = Math.max(0, state.bustPressure - dt * 0.35);
   player.invuln = Math.max(0, player.invuln - dt);
   updatePlayer(dt);
   updateHomeSafeZone(dt);
@@ -961,12 +966,18 @@ function updatePolice(dt) {
     if (distanceToPlayer > STREAM_RADIUS * 1.2) resetCop(cop);
     if (pursuit && cop.contactCooldown <= 0 && distanceToPlayer < (player.inCar ? 52 : 30)) {
       cop.contactCooldown = 0.8;
-      hurt(player.inCar ? 14 : 24);
       state.heat = Math.max(state.heat, 2.2);
       state.wantedTimer = 12;
       state.policeContacts = (state.policeContacts || 0) + 1;
+      const playerCarSpeed = player.inCar ? Math.abs(player.inCar.speed) : 0;
+      state.bustPressure += player.inCar ? (playerCarSpeed < 90 ? 1.15 : 0.45) : 2.2;
       if (player.inCar) player.inCar.speed *= 0.58;
       spark(player.x, player.y, 18, "#4cc9f0");
+      if (state.bustPressure >= 2) {
+        sendHomeFromBust();
+        return;
+      }
+      hurt(player.inCar ? 6 : 10);
     }
     if (pursuit && state.heat >= 3.5 && rand() < 0.022) spark(cop.x, cop.y, 3, "#ef476f");
   }
@@ -1503,6 +1514,8 @@ function updateTestPanel() {
       <dt>wrong side</dt><dd>${player.inCar ? String(isWrongSideDriving(player.inCar)) : "false"}</dd>
       <dt>nearest police</dt><dd>${Number.isFinite(nearestCop) ? nearestCop.toFixed(0) : "-"}</dd>
       <dt>police hits</dt><dd>${state.policeContacts || 0}</dd>
+      <dt>busts</dt><dd>${state.busts || 0}</dd>
+      <dt>bust pressure</dt><dd>${state.bustPressure.toFixed(1)}</dd>
       <dt>peds sidewalk</dt><dd>${pedPrograms.sidewalk || 0}</dd>
       <dt>peds crossing</dt><dd>${(pedPrograms.crossing || 0) + (pedPrograms.jaywalk || 0)}</dd>
       <dt>peds panic</dt><dd>${pedPrograms.panic || 0}</dd>
@@ -1568,6 +1581,8 @@ function updateDebugTelemetry() {
   document.body.dataset.pedsCrossing = String(peds.filter((ped) => ped.program === "crossing" || ped.program === "jaywalk").length);
   document.body.dataset.policeContacts = String(state.policeContacts || 0);
   document.body.dataset.policeBoosts = String(state.policeBoosts || 0);
+  document.body.dataset.busts = String(state.busts || 0);
+  document.body.dataset.bustPressure = state.bustPressure.toFixed(2);
   document.body.dataset.closestTrafficBuffer = closestTrafficBuffer().toFixed(1);
 }
 
@@ -2012,24 +2027,17 @@ function hurt(amount) {
   player.health -= amount;
   player.invuln = 0.5;
   if (player.health <= 0) {
-    state.cash = Math.max(0, state.cash - 120);
     sendHomeFromHospital();
   }
 }
 
-function sendHomeFromHospital() {
+function failActiveJobForPenalty() {
   const jobFailed = activeJob.started;
   if (jobFailed) activeJob = makeJob(state.currentMission);
-  const lifeState = applyLifeLoss(state.lives);
-  state.lives = lifeState.lives;
-  if (lifeState.gameOver) {
-    triggerGameOver();
-    return;
-  }
-  player.health = 100;
-  player.x = HOME.x;
-  player.y = HOME.y;
-  player.inCar = null;
+  return jobFailed;
+}
+
+function resetWantedState() {
   state.heat = 0;
   state.wantedTimer = 0;
   state.lawCooldown = 0;
@@ -2037,7 +2045,40 @@ function sendHomeFromHospital() {
   state.lastLaw = "clear";
   state.homeSafeTimer = 0;
   state.waterTimer = 0;
-  toast(jobFailed ? `Job failed. Discharged from hospital. ${state.lives} lives left.` : `Discharged from hospital. ${state.lives} lives left.`);
+  state.bustPressure = 0;
+}
+
+function sendHomeFromHospital() {
+  const jobFailed = failActiveJobForPenalty();
+  const lifeState = applyLifeLoss(state.lives);
+  state.lives = lifeState.lives;
+  if (lifeState.gameOver) {
+    triggerGameOver();
+    return;
+  }
+  const bill = Math.min(state.cash, HOSPITAL_BILL);
+  state.cash -= bill;
+  localStorage.setItem("wolfe.cash", state.cash);
+  player.health = 100;
+  player.x = HOME.x;
+  player.y = HOME.y;
+  player.inCar = null;
+  resetWantedState();
+  toast(jobFailed ? `Job failed. Hospital bill: $${bill}. ${state.lives} lives left.` : `Hospital bill: $${bill}. ${state.lives} lives left.`);
+}
+
+function sendHomeFromBust() {
+  const jobFailed = failActiveJobForPenalty();
+  const fine = Math.min(state.cash, Math.max(BUST_BASE_FINE, Math.floor(state.cash * 0.3)));
+  state.cash -= fine;
+  state.busts = (state.busts || 0) + 1;
+  localStorage.setItem("wolfe.cash", state.cash);
+  player.health = 100;
+  player.x = HOME.x;
+  player.y = HOME.y;
+  player.inCar = null;
+  resetWantedState();
+  toast(`${jobFailed ? "Job failed. " : ""}Busted by cops: -$${fine}.`);
 }
 
 function triggerGameOver() {
@@ -2050,6 +2091,7 @@ function triggerGameOver() {
   state.lastLaw = "clear";
   state.homeSafeTimer = 0;
   state.waterTimer = 0;
+  state.bustPressure = 0;
   player.health = 0;
   player.inCar = null;
   ui.start.textContent = "Restart Game";
@@ -2067,6 +2109,7 @@ function resetGame() {
   state.lastLaw = "clear";
   state.homeSafeTimer = 0;
   state.waterTimer = 0;
+  state.bustPressure = 0;
   state.cash = Number(localStorage.getItem("wolfe.cash") || 0);
   state.rep = Number(localStorage.getItem("wolfe.rep") || 0);
   state.currentMission = 0;
