@@ -1428,16 +1428,52 @@ function drawCar(car) {
 }
 
 function drawMotorcycle(car) {
-  ctx.fillStyle = car.color;
-  roundRect(-car.w / 2, -car.h / 2, car.w, car.h, 5);
-  ctx.fill();
-  ctx.fillStyle = "rgba(10,14,16,.68)";
-  ctx.fillRect(-car.w * 0.08, -car.h * 0.44, car.w * 0.26, car.h * 0.88);
-  ctx.fillStyle = "rgba(247,244,232,.78)";
+  const frontX = car.w * 0.43;
+  const rearX = -car.w * 0.43;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  ctx.fillStyle = "rgba(6,9,10,.94)";
   ctx.beginPath();
-  ctx.arc(car.w * 0.42, -car.h * 0.42, 4, 0, Math.PI * 2);
-  ctx.arc(car.w * 0.42, car.h * 0.42, 4, 0, Math.PI * 2);
+  ctx.ellipse(rearX, 0, 5.6, 8.6, 0, 0, Math.PI * 2);
+  ctx.ellipse(frontX, 0, 5.6, 8.6, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.strokeStyle = car.color;
+  ctx.lineWidth = 4.8;
+  ctx.beginPath();
+  ctx.moveTo(rearX + 4, 0);
+  ctx.lineTo(-5, -5.7);
+  ctx.lineTo(frontX - 5, 0);
+  ctx.lineTo(-5, 5.7);
+  ctx.closePath();
+  ctx.stroke();
+
+  ctx.fillStyle = car.color;
+  ctx.beginPath();
+  ctx.ellipse(3, 0, 12, 4.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(13,17,19,.82)";
+  ctx.beginPath();
+  ctx.ellipse(-7, 0, 8.4, 5.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(247,244,232,.74)";
+  ctx.lineWidth = 2.8;
+  ctx.beginPath();
+  ctx.moveTo(frontX - 3, -6.8);
+  ctx.lineTo(frontX + 4, -10);
+  ctx.moveTo(frontX - 3, 6.8);
+  ctx.lineTo(frontX + 4, 10);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(255,244,180,.9)";
+  ctx.beginPath();
+  ctx.arc(frontX + 3.4, 0, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawParticle(p) {
@@ -1781,8 +1817,8 @@ function spawnTraffic() {
     const car = {
       bus,
       motorcycle,
-      w: bus ? 96 : motorcycle ? 36 : 54,
-      h: bus ? 32 : motorcycle ? 16 : 28,
+      w: bus ? 96 : motorcycle ? 42 : 54,
+      h: bus ? 32 : motorcycle ? 18 : 28,
       angle: 0,
       speed: 0,
       max: bus ? randRange(190, 240) : motorcycle ? randRange(330, 410) : randRange(280, 360),
