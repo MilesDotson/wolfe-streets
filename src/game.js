@@ -1430,14 +1430,16 @@ function drawCar(car) {
 function drawMotorcycle(car) {
   const frontX = car.w * 0.43;
   const rearX = -car.w * 0.43;
+  const wheelW = car.w * 0.2;
+  const wheelH = car.h * 0.62;
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
   ctx.fillStyle = "#050606";
-  roundRect(rearX - 4, -car.h * 0.31, 10, car.h * 0.62, 3);
+  roundRect(rearX - wheelW * 0.5, -wheelH * 0.5, wheelW, wheelH, 3);
   ctx.fill();
-  roundRect(frontX - 6, -car.h * 0.31, 10, car.h * 0.62, 3);
+  roundRect(frontX - wheelW * 0.5, -wheelH * 0.5, wheelW, wheelH, 3);
   ctx.fill();
 
   ctx.fillStyle = car.color;
@@ -1455,7 +1457,7 @@ function drawMotorcycle(car) {
   ctx.fill();
 
   ctx.strokeStyle = "#050606";
-  ctx.lineWidth = 3.8;
+  ctx.lineWidth = Math.max(2.4, car.h * 0.19);
   ctx.beginPath();
   ctx.moveTo(frontX - 2, -car.h * 0.48);
   ctx.lineTo(frontX - 2, car.h * 0.48);
@@ -1467,7 +1469,7 @@ function drawMotorcycle(car) {
 
   ctx.fillStyle = "rgba(255,244,180,.95)";
   ctx.beginPath();
-  ctx.arc(frontX + 1.8, 0, 2.8, 0, Math.PI * 2);
+  ctx.arc(frontX + car.w * 0.04, 0, Math.max(1.8, car.h * 0.14), 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
@@ -1813,8 +1815,8 @@ function spawnTraffic() {
     const car = {
       bus,
       motorcycle,
-      w: bus ? 96 : motorcycle ? 48 : 54,
-      h: bus ? 32 : motorcycle ? 20 : 28,
+      w: bus ? 96 : motorcycle ? 29 : 43,
+      h: bus ? 32 : motorcycle ? 12 : 22,
       angle: 0,
       speed: 0,
       max: bus ? randRange(190, 240) : motorcycle ? randRange(330, 410) : randRange(280, 360),
